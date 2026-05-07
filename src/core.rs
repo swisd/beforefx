@@ -1,7 +1,11 @@
 use std::collections::HashMap;
+use serde::{Serialize, Deserialize};
 
-#[derive(Clone, Copy)]
-pub struct BezierControl { pub cp1: f32, pub cp2: f32 }
+#[derive(Clone, Copy, Serialize, Deserialize)]
+pub struct BezierControl {
+    pub cp1: f32,
+    pub cp2: f32,
+}
 
 #[derive(Clone)]
 pub struct SelectedKeyframe {
@@ -10,12 +14,14 @@ pub struct SelectedKeyframe {
     pub keyframe_index: usize,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Keyframe {
     pub time: f32,
     pub value: f32,
     pub ease: Option<BezierControl>,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Property {
     pub name: String,
     pub base_value: f32,
@@ -24,7 +30,9 @@ pub struct Property {
 
 impl Property {
     pub fn get_value_at(&self, time: f32) -> f32 {
-        if self.keyframes.is_empty() { return self.base_value; }
+        if self.keyframes.is_empty() {
+            return self.base_value;
+        }
         let mut frames = self.keyframes.iter().peekable();
         while let Some(curr) = frames.next() {
             if let Some(next) = frames.peek() {
@@ -35,7 +43,9 @@ impl Property {
                         None => curr.value + t * (next.value - curr.value),
                     };
                 }
-            } else if time >= curr.time { return curr.value; }
+            } else if time >= curr.time {
+                return curr.value;
+            }
         }
         self.keyframes[0].value
     }
@@ -48,5 +58,62 @@ impl Property {
     }
 }
 
-pub struct Layer { pub name: String, pub properties: HashMap<String, Property> }
-pub struct Composition { pub layers: Vec<Layer>, pub current_time: f32, pub is_playing: bool }
+#[derive(Serialize, Deserialize)]
+pub enum LayerSource {
+    Solid { color: [f32; 4] },
+    Image { path: String },
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Layer {
+    pub name: String,
+    pub source: LayerSource,
+    pub properties: HashMap<String, Property>,
+    pub visible: bool,
+    pub locked: bool,
+    pub solo: bool,
+    pub fx: bool,
+    pub d3: bool,
+    pub ff: bool,
+    pub moblur: bool,
+    pub shy: bool,
+    pub collapse: bool,
+    pub collapsed: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Resource {
+    pub name: String,
+    pub path: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Settings {
+    pub property_colors: HashMap<String, [u8; 3]>,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        let mut property_colors = HashMap::new();
+        property_colors.insert("anchorX".to_string(), [200, 100, 100]);
+        property_colors.insert("anchorY".to_string(), [200, 100, 100]);
+        property_colors.insert("x".to_string(), [100, 200, 100]);
+        property_colors.insert("y".to_string(), [100, 200, 100]);
+        property_colors.insert("rotation".to_string(), [100, 100, 200]);
+        property_colors.insert("scaleX".to_string(), [200, 200, 100]);
+        property_colors.insert("scaleY".to_string(), [200, 200, 100]);
+        property_colors.insert("opacity".to_string(), [200, 100, 200]);
+        Settings { property_colors }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Composition {
+    pub layers: Vec<Layer>,
+    pub resources: Vec<Resource>,
+    pub current_time: f32,
+    pub is_playing: bool,
+    pub show_curves: bool,
+    #[serde(default)]
+    pub settings: Settings,
+}

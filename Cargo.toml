@@ -7,3 +7,7 @@ edition = "2024"
 # Use the exact same version egui-macroquad expects
 macroquad = "0.4.5"
 egui-macroquad = "0.17.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rfd = "0.14"
+image = { version = "0.24", features = ["jpeg", "png"] }
