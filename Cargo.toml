@@ -1,0 +1,9 @@
+[package]
+name = "beforefx"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Use the exact same version egui-macroquad expects
+macroquad = "0.4.5"
+egui-macroquad = "0.17.3"
