@@ -19,3 +19,10 @@ jobs:
 
       - name: Build for Apple Silicon (M1/M2)
         run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Upload macOS Binary
+        uses: actions/upload-artifact@v4
+        with:
+            name: macos-binary-aarch64
+            # Replace 'my_app' with your actual binary name
+            path: target/aarch64-apple-darwin/release/beforefx_mac_aarch64
