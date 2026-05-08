@@ -1,0 +1,21 @@
+name: Rust Build Mac
+on: [push]
+
+jobs:
+  build:
+    # Use macOS runners for native toolchain support
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Recommended action to setup Rust and caching
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Build for Intel Mac
+        run: cargo build --release --target x86_64-apple-darwin
+
+      - name: Build for Apple Silicon (M1/M2)
+        run: cargo build --release --target aarch64-apple-darwin
