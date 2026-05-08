@@ -36,7 +36,7 @@ fn create_default_properties() -> HashMap<String, Property> {
 async fn main() {
     let mut comp = Composition {
         layers: vec![Layer {
-            name: "creative.mov".into(),
+            name: "Solid 0".into(),
             source: LayerSource::Solid { color: [1.0, 1.0, 1.0, 1.0] },
             properties: create_default_properties(),
             visible: true,
@@ -54,6 +54,8 @@ async fn main() {
         current_time: 0.0,
         is_playing: false,
         show_curves: false,
+        timeline_scroll_v: 0.0,
+        timeline_scroll_h: 0.0,
         settings: Settings::default(),
     };
     let mut selected_keyframe: Option<SelectedKeyframe> = None;
@@ -74,7 +76,7 @@ async fn main() {
         // Check if any layer needs texture loading
         for l in &comp.layers {
             if let LayerSource::Image { path } = &l.source {
-                if !textures.contains_key(path) {
+                if !textures.contains_key(path) && !to_load.contains(path) {
                     to_load.push(path.clone());
                 }
             }
@@ -84,12 +86,26 @@ async fn main() {
             comp.current_time += get_frame_time();
         }
 
+        // --- Keyboard Shortcuts for Scaling ---
+        if is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl) {
+            if is_key_pressed(KeyCode::Equal) { // Plus key
+                comp.settings.ui_scale = (comp.settings.ui_scale + 0.1).min(2.5);
+            }
+            if is_key_pressed(KeyCode::Minus) {
+                comp.settings.ui_scale = (comp.settings.ui_scale - 0.1).max(0.5);
+            }
+            if is_key_pressed(KeyCode::Key0) {
+                comp.settings.ui_scale = 1.0;
+            }
+        }
+
         // --- 1. RENDER ANIMATION ---
         set_camera(&Camera2D {
             render_target: Some(render_target.clone()),
             ..Camera2D::from_display_rect(Rect::new(0., 0., 1920., 1080.))
         });
         clear_background(Color::from_rgba(25, 25, 25, 255));
+        
         for l in &comp.layers {
             if !l.visible { continue; }
             let ax = l.properties["anchorX"].get_value_at(comp.current_time);
@@ -139,9 +155,11 @@ async fn main() {
             }
         }
         set_default_camera();
+        clear_background(Color::from_rgba(20, 20, 20, 255));
 
         // --- 2. UI LAYOUT ---
         egui_macroquad::ui(|ctx| {
+            ctx.set_pixels_per_point(comp.settings.ui_scale);
             apply_after_effects_style(ctx);
 
             // TOOLBAR (TOP)
@@ -164,10 +182,21 @@ async fn main() {
                                 .add_filter("BeforeFX Project", &["bfx"])
                                 .pick_file()
                             {
-                                if let Ok(json) = std::fs::read_to_string(path) {
-                                    if let Ok(new_comp) = serde_json::from_str::<Composition>(&json) {
-                                        comp = new_comp;
-                                        // Textures will be picked up by the loading logic in the loop
+                                match std::fs::read_to_string(&path) {
+                                    Ok(json) => {
+                                        match serde_json::from_str::<Composition>(&json) {
+                                            Ok(new_comp) => {
+                                                comp = new_comp;
+                                                textures.clear(); // Clear existing textures to avoid memory bloat
+                                                println!("Project loaded: {:?}", path);
+                                            }
+                                            Err(e) => {
+                                                eprintln!("Failed to parse project: {}", e);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Failed to read project file: {}", e);
                                     }
                                 }
                             }
@@ -195,6 +224,7 @@ async fn main() {
                             {
                                 let path_str = path.to_string_lossy().to_string();
                                 let name = path.file_name().unwrap().to_string_lossy().to_string();
+                                println!("Importing image: {}", path_str);
                                 comp.resources.push(Resource {
                                     name: name.clone(),
                                     path: path_str.clone(),
@@ -239,6 +269,16 @@ async fn main() {
 
                     ui.separator();
                     ui.menu_button("Edit", |ui| {
+                        ui.menu_button("UI Scale", |ui| {
+                            if ui.button("0.5x").clicked() { comp.settings.ui_scale = 0.5; }
+                            if ui.button("0.75x").clicked() { comp.settings.ui_scale = 0.75; }
+                            if ui.button("1.0x").clicked() { comp.settings.ui_scale = 1.0; }
+                            if ui.button("1.25x").clicked() { comp.settings.ui_scale = 1.25; }
+                            if ui.button("1.5x").clicked() { comp.settings.ui_scale = 1.5; }
+                            if ui.button("2.0x").clicked() { comp.settings.ui_scale = 2.0; }
+                            ui.separator();
+                            ui.add(egui::Slider::new(&mut comp.settings.ui_scale, 0.5..=2.5).text("Custom"));
+                        });
                         ui.menu_button("Property Colors", |ui| {
                             let mut keys: Vec<_> = comp.settings.property_colors.keys().cloned().collect();
                             keys.sort();
@@ -351,9 +391,11 @@ async fn main() {
                 });
 
             // TIMELINE (BOTTOM)
-            egui::TopBottomPanel::bottom("timeline_panel")
+            let screen_height = ctx.screen_rect().height();
+            egui::TopBottomPanel::bottom("timeline_panel_v4")
                 .resizable(true)
-                .default_height(330.0)
+                .default_height(screen_height / 3.0)
+                .height_range(screen_height / 3.0..=1000.0)
                 .show(ctx, |ui| {
                     // Panel A: Timecode & Transport
                     ui.horizontal(|ui| {
@@ -391,41 +433,49 @@ async fn main() {
                 });
 
             // VIEWPORT SLOT (CENTER)
-            egui::CentralPanel::default().show(ctx, |ui| {
-                viewport_rect = ui.available_rect_before_wrap();
+            egui::CentralPanel::default()
+                .frame(egui::Frame::default().fill(egui::Color32::TRANSPARENT).stroke(egui::Stroke::NONE))
+                .show(ctx, |ui| {
+                viewport_rect = ui.max_rect();
             });
         });
 
         // --- 3. FINAL COMPOSITE ---
         egui_macroquad::draw(); // Draw egui first
 
+        // Ensure we are using the default camera for screen-space drawing
+        set_default_camera();
+
         // Draw Macroquad texture directly over the egui CentralPanel "hole"
-        // Maintain aspect ratio (16:9)
-        let target_aspect = 1920.0 / 1080.0;
-        let viewport_aspect = viewport_rect.width() / viewport_rect.height();
+        if viewport_rect.width() > 0.0 && viewport_rect.height() > 0.0 {
+            // Maintain aspect ratio (16:9)
+            let target_aspect = 1920.0 / 1080.0;
+            let viewport_aspect = viewport_rect.width() / viewport_rect.height();
 
-        let (draw_w, draw_h) = if viewport_aspect > target_aspect {
-            // Viewport is wider than target
-            (viewport_rect.height() * target_aspect, viewport_rect.height())
-        } else {
-            // Viewport is taller than target
-            (viewport_rect.width(), viewport_rect.width() / target_aspect)
-        };
+            let (draw_w, draw_h) = if viewport_aspect > target_aspect {
+                // Viewport is wider than target
+                (viewport_rect.height() * target_aspect, viewport_rect.height())
+            } else {
+                // Viewport is taller than target
+                (viewport_rect.width(), viewport_rect.width() / target_aspect)
+            };
 
-        let draw_x = viewport_rect.min.x + (viewport_rect.width() - draw_w) / 2.0;
-        let draw_y = viewport_rect.min.y + (viewport_rect.height() - draw_h) / 2.0;
+            let ppp = comp.settings.ui_scale;
+            let draw_x = viewport_rect.min.x + (viewport_rect.width() - draw_w) / 2.0;
+            let draw_y = viewport_rect.min.y + (viewport_rect.height() - draw_h) / 2.0;
 
-        draw_texture_ex(
-            &render_target.texture,
-            draw_x,
-            draw_y,
-            WHITE,
-            DrawTextureParams {
-                dest_size: Some(vec2(draw_w, draw_h)),
-                flip_y: true,
-                ..Default::default()
-            },
-        );
+            draw_texture_ex(
+                &render_target.texture,
+                draw_x * ppp,
+                draw_y * ppp,
+                WHITE,
+                DrawTextureParams {
+                    dest_size: Some(vec2(draw_w * ppp, draw_h * ppp)),
+                    flip_y: true,
+                    ..Default::default()
+                },
+            );
+        }
 
         next_frame().await
     }

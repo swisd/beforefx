@@ -69,16 +69,30 @@ pub struct Layer {
     pub name: String,
     pub source: LayerSource,
     pub properties: HashMap<String, Property>,
+    #[serde(default = "default_true")]
     pub visible: bool,
+    #[serde(default)]
     pub locked: bool,
+    #[serde(default)]
     pub solo: bool,
+    #[serde(default)]
     pub fx: bool,
+    #[serde(default)]
     pub d3: bool,
+    #[serde(default)]
     pub ff: bool,
+    #[serde(default)]
     pub moblur: bool,
+    #[serde(default)]
     pub shy: bool,
+    #[serde(default)]
     pub collapse: bool,
+    #[serde(default)]
     pub collapsed: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Serialize, Deserialize)]
@@ -90,6 +104,12 @@ pub struct Resource {
 #[derive(Serialize, Deserialize)]
 pub struct Settings {
     pub property_colors: HashMap<String, [u8; 3]>,
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: f32,
+}
+
+fn default_ui_scale() -> f32 {
+    1.0
 }
 
 impl Default for Settings {
@@ -103,17 +123,25 @@ impl Default for Settings {
         property_colors.insert("scaleX".to_string(), [200, 200, 100]);
         property_colors.insert("scaleY".to_string(), [200, 200, 100]);
         property_colors.insert("opacity".to_string(), [200, 100, 200]);
-        Settings { property_colors }
+        Settings { property_colors, ui_scale: 1.0 }
     }
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct Composition {
     pub layers: Vec<Layer>,
+    #[serde(default)]
     pub resources: Vec<Resource>,
+    #[serde(default)]
     pub current_time: f32,
+    #[serde(default)]
     pub is_playing: bool,
+    #[serde(default)]
     pub show_curves: bool,
+    #[serde(default)]
+    pub timeline_scroll_v: f32,
+    #[serde(default)]
+    pub timeline_scroll_h: f32,
     #[serde(default)]
     pub settings: Settings,
 }
