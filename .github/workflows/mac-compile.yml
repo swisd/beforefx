@@ -25,4 +25,4 @@ jobs:
         with:
             name: macos-binary-aarch64
             # Replace 'my_app' with your actual binary name
-            path: target/aarch64-apple-darwin/release/beforefx_mac_aarch64
+            path: target/aarch64-apple-darwin/release/beforefx
