@@ -1,1 +1,6 @@
 /target
+avutil-60.dll
+avformat-62.dll
+avfilter-11.dll
+avdevice-62.dll
+avcodec-62.dll
