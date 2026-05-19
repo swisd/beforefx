@@ -21,7 +21,19 @@ pub fn apply_after_effects_style(ctx: &egui::Context) {
 pub fn sorted_property_names(layer: &Layer) -> Vec<String> {
     let mut names: Vec<String> = layer.properties.keys().cloned().collect();
     // AE typical order: Anchor, Position, Scale, Rotation, Opacity
-    let order = ["anchorX", "anchorY", "x", "y", "scaleX", "scaleY", "rotation", "opacity"];
+    let order = [
+        "anchorX",
+        "anchorY",
+        "x",
+        "y",
+        "z",
+        "scaleX",
+        "scaleY",
+        "rotation",
+        "rotationX",
+        "rotationY",
+        "opacity",
+    ];
     names.sort_by(|a, b| {
         let pos_a = order.iter().position(|&x| x == a).unwrap_or(99);
         let pos_b = order.iter().position(|&x| x == b).unwrap_or(99);
@@ -79,7 +91,11 @@ fn draw_keyframe_editor(
                 .color(egui::Color32::from_gray(190)),
         );
         ui.separator();
-        if ui.selectable_label(comp.show_curves, "📈").on_hover_text("Curve Editor").clicked() {
+        if ui
+            .selectable_label(comp.show_curves, "📈")
+            .on_hover_text("Curve Editor")
+            .clicked()
+        {
             comp.show_curves = !comp.show_curves;
         }
         ui.separator();
@@ -110,6 +126,18 @@ fn draw_keyframe_editor(
                 }
 
                 if let Some(ease) = &mut keyframe.ease {
+                    if ui.button("Easy Ease").clicked() {
+                        ease.cp1 = 0.33;
+                        ease.cp2 = 0.67;
+                    }
+                    if ui.button("Ease In").clicked() {
+                        ease.cp1 = 0.15;
+                        ease.cp2 = 1.0;
+                    }
+                    if ui.button("Ease Out").clicked() {
+                        ease.cp1 = 0.85;
+                        ease.cp2 = 0.35;
+                    }
                     ui.label("In");
                     ui.add(egui::Slider::new(&mut ease.cp1, 0.0..=1.0).show_value(true));
                     ui.label("Out");
@@ -204,8 +232,18 @@ pub fn draw_pro_ae_timeline(
 
                                     // Solo (S)
                                     let solo_text = if layer.solo { "S" } else { " " };
-                                    let solo_color = if layer.solo { egui::Color32::from_rgb(255, 200, 0) } else { egui::Color32::from_gray(100) };
-                                    if ui.add(egui::SelectableLabel::new(layer.solo, egui::RichText::new(solo_text).color(solo_color))).clicked() {
+                                    let solo_color = if layer.solo {
+                                        egui::Color32::from_rgb(255, 200, 0)
+                                    } else {
+                                        egui::Color32::from_gray(100)
+                                    };
+                                    if ui
+                                        .add(egui::SelectableLabel::new(
+                                            layer.solo,
+                                            egui::RichText::new(solo_text).color(solo_color),
+                                        ))
+                                        .clicked()
+                                    {
                                         layer.solo = !layer.solo;
                                     }
 
@@ -240,14 +278,25 @@ pub fn draw_pro_ae_timeline(
 
                                     // Collapse / Continuous Rasterize (AE star icon - using "❂")
                                     let collapse_text = if layer.collapse { "*" } else { " " };
-                                    if ui.selectable_label(layer.collapse, collapse_text).clicked() {
+                                    if ui.selectable_label(layer.collapse, collapse_text).clicked()
+                                    {
                                         layer.collapse = !layer.collapse;
                                     }
 
                                     // effect
                                     let fx_text = if layer.fx { "fx" } else { "  " };
-                                    let fx_color = if layer.fx { egui::Color32::from_rgb(180, 140, 255) } else { egui::Color32::from_gray(100) };
-                                    if ui.add(egui::SelectableLabel::new(layer.fx, egui::RichText::new(fx_text).color(fx_color))).clicked() {
+                                    let fx_color = if layer.fx {
+                                        egui::Color32::from_rgb(180, 140, 255)
+                                    } else {
+                                        egui::Color32::from_gray(100)
+                                    };
+                                    if ui
+                                        .add(egui::SelectableLabel::new(
+                                            layer.fx,
+                                            egui::RichText::new(fx_text).color(fx_color),
+                                        ))
+                                        .clicked()
+                                    {
                                         layer.fx = !layer.fx;
                                     }
 
@@ -259,8 +308,18 @@ pub fn draw_pro_ae_timeline(
 
                                     // Motion Blur (AE circles - using "Ⓞ")
                                     let moblur_text = if layer.moblur { "O" } else { " " };
-                                    let moblur_color = if layer.moblur { egui::Color32::from_rgb(100, 200, 255) } else { egui::Color32::from_gray(100) };
-                                    if ui.add(egui::SelectableLabel::new(layer.moblur, egui::RichText::new(moblur_text).color(moblur_color))).clicked() {
+                                    let moblur_color = if layer.moblur {
+                                        egui::Color32::from_rgb(100, 200, 255)
+                                    } else {
+                                        egui::Color32::from_gray(100)
+                                    };
+                                    if ui
+                                        .add(egui::SelectableLabel::new(
+                                            layer.moblur,
+                                            egui::RichText::new(moblur_text).color(moblur_color),
+                                        ))
+                                        .clicked()
+                                    {
                                         layer.moblur = !layer.moblur;
                                     }
 
@@ -275,13 +334,15 @@ pub fn draw_pro_ae_timeline(
                                         ui.horizontal(|ui| {
                                             ui.add_space(18.0);
                                             ui.label(
-                                                egui::RichText::new(name.clone())
-                                                    .size(12.0)
-                                                    .color(if let Some(c) = comp.settings.property_colors.get(&name) {
+                                                egui::RichText::new(name.clone()).size(12.0).color(
+                                                    if let Some(c) =
+                                                        comp.settings.property_colors.get(&name)
+                                                    {
                                                         egui::Color32::from_rgb(c[0], c[1], c[2])
                                                     } else {
                                                         egui::Color32::from_gray(155)
-                                                    }),
+                                                    },
+                                                ),
                                             );
                                         });
                                     }
@@ -309,6 +370,8 @@ pub fn draw_pro_ae_timeline(
                     let rect = res.rect;
                     let mut clicked_selection = None;
                     let mut clicked_keyframe = false;
+                    let mut curve_handle_edit: Option<(usize, String, usize, CurveHandle, f32)> =
+                        None;
 
                     painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(24, 24, 27));
 
@@ -368,7 +431,10 @@ pub fn draw_pro_ae_timeline(
                                 );
 
                                 painter.line_segment(
-                                    [egui::pos2(rect.left(), row_center_y), egui::pos2(rect.right(), row_center_y)],
+                                    [
+                                        egui::pos2(rect.left(), row_center_y),
+                                        egui::pos2(rect.right(), row_center_y),
+                                    ],
                                     egui::Stroke::new(0.5, egui::Color32::from_gray(40)),
                                 );
 
@@ -394,7 +460,10 @@ pub fn draw_pro_ae_timeline(
                                         let x2 = rect.left() + (next.time * pps);
                                         let y2 = to_screen_y(next.value);
 
-                                        let curve = curr.ease.unwrap_or(BezierControl { cp1: 0.33, cp2: 0.67 });
+                                        let curve = curr.ease.unwrap_or(BezierControl {
+                                            cp1: 0.33,
+                                            cp2: 0.67,
+                                        });
 
                                         // Draw the curve
                                         let p1 = egui::pos2(x1, y1);
@@ -402,36 +471,131 @@ pub fn draw_pro_ae_timeline(
                                         let p3 = egui::pos2(x1 + (x2 - x1) * curve.cp2, y2);
                                         let p4 = egui::pos2(x2, y2);
 
-                                        painter.add(egui::Shape::CubicBezier(egui::epaint::CubicBezierShape {
-                                            points: [p1, p2, p3, p4],
-                                            closed: false,
-                                            fill: egui::Color32::TRANSPARENT,
-                                            stroke: egui::epaint::PathStroke::new(1.5, egui::Color32::from_rgb(255, 210, 75)),
-                                        }));
+                                        painter.add(egui::Shape::CubicBezier(
+                                            egui::epaint::CubicBezierShape {
+                                                points: [p1, p2, p3, p4],
+                                                closed: false,
+                                                fill: egui::Color32::TRANSPARENT,
+                                                stroke: egui::epaint::PathStroke::new(
+                                                    1.5,
+                                                    egui::Color32::from_rgb(255, 210, 75),
+                                                ),
+                                            },
+                                        ));
 
                                         // Draw Bezier handles if selected
                                         let is_selected = selected.as_ref().is_some_and(|sel| {
-                                            sel.layer_index == layer_index && sel.property_name == property_name && sel.keyframe_index == keyframe_index
+                                            sel.layer_index == layer_index
+                                                && sel.property_name == property_name
+                                                && sel.keyframe_index == keyframe_index
                                         });
 
                                         if is_selected {
-                                            painter.line_segment([p1, p2], egui::Stroke::new(1.0, egui::Color32::from_gray(100)));
-                                            painter.circle_filled(p2, 3.0, egui::Color32::from_gray(200));
+                                            painter.line_segment(
+                                                [p1, p2],
+                                                egui::Stroke::new(
+                                                    1.0,
+                                                    egui::Color32::from_gray(100),
+                                                ),
+                                            );
+                                            painter.circle_filled(
+                                                p2,
+                                                3.0,
+                                                egui::Color32::from_gray(200),
+                                            );
 
                                             let next_p1 = egui::pos2(x2, y2);
                                             let next_p2 = p3;
-                                        painter.line_segment([next_p1, next_p2], egui::Stroke::new(1.0, egui::Color32::from_gray(100)));
-                                            painter.circle_filled(next_p2, 3.0, egui::Color32::from_gray(200));
+                                            painter.line_segment(
+                                                [next_p1, next_p2],
+                                                egui::Stroke::new(
+                                                    1.0,
+                                                    egui::Color32::from_gray(100),
+                                                ),
+                                            );
+                                            painter.circle_filled(
+                                                next_p2,
+                                                3.0,
+                                                egui::Color32::from_gray(200),
+                                            );
+                                        }
+
+                                        if res.clicked() {
+                                            if let Some(pos) = res.interact_pointer_pos() {
+                                                if pos.distance(p2) <= 8.0 {
+                                                    clicked_keyframe = true;
+                                                    clicked_selection = Some(SelectedKeyframe {
+                                                        layer_index,
+                                                        property_name: property_name.clone(),
+                                                        keyframe_index,
+                                                        handle: Some(CurveHandle::Out),
+                                                    });
+                                                } else if pos.distance(p3) <= 8.0 {
+                                                    clicked_keyframe = true;
+                                                    clicked_selection = Some(SelectedKeyframe {
+                                                        layer_index,
+                                                        property_name: property_name.clone(),
+                                                        keyframe_index,
+                                                        handle: Some(CurveHandle::In),
+                                                    });
+                                                }
+                                            }
+                                        }
+
+                                        if res.dragged() {
+                                            if let (Some(sel), Some(pos)) =
+                                                (selected.as_ref(), res.interact_pointer_pos())
+                                            {
+                                                if sel.layer_index == layer_index
+                                                    && sel.property_name == property_name
+                                                    && sel.keyframe_index == keyframe_index
+                                                {
+                                                    let denom = (x2 - x1).abs().max(1.0);
+                                                    match sel.handle {
+                                                        Some(CurveHandle::Out) => {
+                                                            curve_handle_edit = Some((
+                                                                layer_index,
+                                                                property_name.clone(),
+                                                                keyframe_index,
+                                                                CurveHandle::Out,
+                                                                ((pos.x - x1) / denom)
+                                                                    .clamp(0.0, 1.0),
+                                                            ));
+                                                        }
+                                                        Some(CurveHandle::In) => {
+                                                            curve_handle_edit = Some((
+                                                                layer_index,
+                                                                property_name.clone(),
+                                                                keyframe_index,
+                                                                CurveHandle::In,
+                                                                ((pos.x - x1) / denom)
+                                                                    .clamp(0.0, 1.0),
+                                                            ));
+                                                        }
+                                                        None => {}
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
 
                                     // Draw keyframe point
                                     let is_selected = selected.as_ref().is_some_and(|sel| {
-                                        sel.layer_index == layer_index && sel.property_name == property_name && sel.keyframe_index == keyframe_index
+                                        sel.layer_index == layer_index
+                                            && sel.property_name == property_name
+                                            && sel.keyframe_index == keyframe_index
                                     });
 
-                                    let dot_color = if is_selected { egui::Color32::WHITE } else { egui::Color32::from_rgb(226, 176, 45) };
-                                    painter.circle_filled(egui::pos2(x1, y1), if is_selected { 4.0 } else { 3.0 }, dot_color);
+                                    let dot_color = if is_selected {
+                                        egui::Color32::WHITE
+                                    } else {
+                                        egui::Color32::from_rgb(226, 176, 45)
+                                    };
+                                    painter.circle_filled(
+                                        egui::pos2(x1, y1),
+                                        if is_selected { 4.0 } else { 3.0 },
+                                        dot_color,
+                                    );
 
                                     if res.clicked() {
                                         if let Some(pos) = res.interact_pointer_pos() {
@@ -441,6 +605,7 @@ pub fn draw_pro_ae_timeline(
                                                     layer_index,
                                                     property_name: property_name.clone(),
                                                     keyframe_index,
+                                                    handle: None,
                                                 });
                                             }
                                         }
@@ -476,21 +641,31 @@ pub fn draw_pro_ae_timeline(
                                     let x1 = rect.left() + (curr.time * pps);
                                     if let Some(next) = prop.keyframes.get(keyframe_index + 1) {
                                         let x2 = rect.left() + (next.time * pps);
-                                        let curve = curr.ease.unwrap_or(BezierControl { cp1: 0.4, cp2: 0.6 });
-                                        painter.add(egui::Shape::CubicBezier(egui::epaint::CubicBezierShape {
-                                            points: [
-                                                egui::pos2(x1, row_center_y),
-                                                egui::pos2(x1 + (x2 - x1) * curve.cp1, row_center_y - 12.0),
-                                                egui::pos2(x1 + (x2 - x1) * curve.cp2, row_center_y + 12.0),
-                                                egui::pos2(x2, row_center_y),
-                                            ],
-                                            closed: false,
-                                            fill: egui::Color32::TRANSPARENT,
-                                            stroke: egui::epaint::PathStroke::new(
-                                                1.2,
-                                                egui::Color32::from_gray(130),
-                                            ),
-                                        }));
+                                        let curve = curr
+                                            .ease
+                                            .unwrap_or(BezierControl { cp1: 0.4, cp2: 0.6 });
+                                        painter.add(egui::Shape::CubicBezier(
+                                            egui::epaint::CubicBezierShape {
+                                                points: [
+                                                    egui::pos2(x1, row_center_y),
+                                                    egui::pos2(
+                                                        x1 + (x2 - x1) * curve.cp1,
+                                                        row_center_y - 12.0,
+                                                    ),
+                                                    egui::pos2(
+                                                        x1 + (x2 - x1) * curve.cp2,
+                                                        row_center_y + 12.0,
+                                                    ),
+                                                    egui::pos2(x2, row_center_y),
+                                                ],
+                                                closed: false,
+                                                fill: egui::Color32::TRANSPARENT,
+                                                stroke: egui::epaint::PathStroke::new(
+                                                    1.2,
+                                                    egui::Color32::from_gray(130),
+                                                ),
+                                            },
+                                        ));
                                     }
 
                                     let is_selected = selected.as_ref().is_some_and(|sel| {
@@ -524,6 +699,7 @@ pub fn draw_pro_ae_timeline(
                                                     layer_index,
                                                     property_name: property_name.clone(),
                                                     keyframe_index,
+                                                    handle: None,
                                                 });
                                             }
                                         }
@@ -536,6 +712,26 @@ pub fn draw_pro_ae_timeline(
 
                     if res.clicked() {
                         *selected = clicked_selection;
+                    }
+
+                    if let Some((layer_index, property_name, keyframe_index, handle, value)) =
+                        curve_handle_edit
+                    {
+                        if let Some(keyframe) = comp
+                            .layers
+                            .get_mut(layer_index)
+                            .and_then(|layer| layer.properties.get_mut(&property_name))
+                            .and_then(|prop| prop.keyframes.get_mut(keyframe_index))
+                        {
+                            let ease = keyframe.ease.get_or_insert(BezierControl {
+                                cp1: 0.33,
+                                cp2: 0.67,
+                            });
+                            match handle {
+                                CurveHandle::Out => ease.cp1 = value,
+                                CurveHandle::In => ease.cp2 = value,
+                            }
+                        }
                     }
 
                     let cti_x = rect.left() + (comp.current_time * pps);

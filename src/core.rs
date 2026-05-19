@@ -1,5 +1,5 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct BezierControl {
@@ -12,6 +12,13 @@ pub struct SelectedKeyframe {
     pub layer_index: usize,
     pub property_name: String,
     pub keyframe_index: usize,
+    pub handle: Option<CurveHandle>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CurveHandle {
+    Out,
+    In,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -60,8 +67,26 @@ impl Property {
 
 #[derive(Serialize, Deserialize)]
 pub enum LayerSource {
-    Solid { color: [f32; 4] },
-    Image { path: String },
+    Solid {
+        color: [f32; 4],
+    },
+    Image {
+        path: String,
+    },
+    Audio {
+        path: String,
+    },
+    Video {
+        path: String,
+    },
+    Object3D {
+        path: Option<String>,
+        color: [f32; 4],
+    },
+    Polygon {
+        points: Vec<[f32; 2]>,
+        color: [f32; 4],
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -99,6 +124,22 @@ fn default_true() -> bool {
 pub struct Resource {
     pub name: String,
     pub path: String,
+    #[serde(default)]
+    pub kind: ResourceKind,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceKind {
+    Image,
+    Audio,
+    Video,
+    Model3D,
+}
+
+impl Default for ResourceKind {
+    fn default() -> Self {
+        ResourceKind::Image
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -106,10 +147,34 @@ pub struct Settings {
     pub property_colors: HashMap<String, [u8; 3]>,
     #[serde(default = "default_ui_scale")]
     pub ui_scale: f32,
+    #[serde(default = "default_width")]
+    pub width: u32,
+    #[serde(default = "default_height")]
+    pub height: u32,
+    #[serde(default = "default_duration")]
+    pub duration: f32,
+    #[serde(default = "default_fps")]
+    pub fps: u32,
 }
 
 fn default_ui_scale() -> f32 {
     1.0
+}
+
+fn default_width() -> u32 {
+    1920
+}
+
+fn default_height() -> u32 {
+    1080
+}
+
+fn default_duration() -> f32 {
+    30.0
+}
+
+fn default_fps() -> u32 {
+    60
 }
 
 impl Default for Settings {
@@ -122,8 +187,18 @@ impl Default for Settings {
         property_colors.insert("rotation".to_string(), [100, 100, 200]);
         property_colors.insert("scaleX".to_string(), [200, 200, 100]);
         property_colors.insert("scaleY".to_string(), [200, 200, 100]);
+        property_colors.insert("z".to_string(), [100, 180, 230]);
+        property_colors.insert("rotationX".to_string(), [120, 140, 220]);
+        property_colors.insert("rotationY".to_string(), [120, 140, 220]);
         property_colors.insert("opacity".to_string(), [200, 100, 200]);
-        Settings { property_colors, ui_scale: 1.0 }
+        Settings {
+            property_colors,
+            ui_scale: 1.0,
+            width: default_width(),
+            height: default_height(),
+            duration: default_duration(),
+            fps: default_fps(),
+        }
     }
 }
 
