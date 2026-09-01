@@ -127,6 +127,13 @@ pub fn property_display_name(prop_name: &str) -> String {
         "waveWidth" => "Wave Width".to_string(),
         "speed" => "Speed".to_string(),
         "direction" => "Direction".to_string(),
+        "block_size" | "blockSize" => "Macroblock Size".to_string(),
+        "compression" => "Compression Level".to_string(),
+        "chroma_loss" | "chromaLoss" => "Chroma Loss (Bleed)".to_string(),
+        "corruption" => "Corruption / Mosh".to_string(),
+        "temporal_jitter" | "temporalJitter" => "Temporal Jitter".to_string(),
+        "noise_dither" | "noiseDither" => "Noise / Dither".to_string(),
+        "mix_amount" | "mixAmount" => "Mix Amount".to_string(),
         other => crate::plugin::format_display_name(other),
     }
 }

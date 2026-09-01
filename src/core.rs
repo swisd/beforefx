@@ -84,6 +84,7 @@ pub enum EffectType {
     ChromaticAberration,
     DirectionalBlur,
     WaveWarp,
+    Mp4UltraCompress,
     #[serde(rename = "Plugin")]
     Plugin(String),
 }
@@ -161,6 +162,15 @@ impl LayerEffect {
                 properties.insert("waveWidth".to_string(), Property { name: "waveWidth".to_string(), base_value: 40.0, keyframes: vec![], wiggle: None });
                 properties.insert("speed".to_string(), Property { name: "speed".to_string(), base_value: 1.0, keyframes: vec![], wiggle: None });
                 properties.insert("direction".to_string(), Property { name: "direction".to_string(), base_value: 0.0, keyframes: vec![], wiggle: None });
+            }
+            EffectType::Mp4UltraCompress => {
+                properties.insert("block_size".to_string(), Property { name: "block_size".to_string(), base_value: 16.0, keyframes: vec![], wiggle: None });
+                properties.insert("compression".to_string(), Property { name: "compression".to_string(), base_value: 75.0, keyframes: vec![], wiggle: None });
+                properties.insert("chroma_loss".to_string(), Property { name: "chroma_loss".to_string(), base_value: 60.0, keyframes: vec![], wiggle: None });
+                properties.insert("corruption".to_string(), Property { name: "corruption".to_string(), base_value: 30.0, keyframes: vec![], wiggle: None });
+                properties.insert("temporal_jitter".to_string(), Property { name: "temporal_jitter".to_string(), base_value: 25.0, keyframes: vec![], wiggle: None });
+                properties.insert("noise_dither".to_string(), Property { name: "noise_dither".to_string(), base_value: 15.0, keyframes: vec![], wiggle: None });
+                properties.insert("mix_amount".to_string(), Property { name: "mix_amount".to_string(), base_value: 100.0, keyframes: vec![], wiggle: None });
             }
             EffectType::Plugin(_) => {}
         }
@@ -550,6 +560,12 @@ pub struct Composition {
     #[serde(default)]
     pub solo_animated_properties: bool,
     #[serde(default)]
+    pub viewport_effects: Vec<LayerEffect>,
+    #[serde(default = "default_true")]
+    pub viewport_fx_enabled: bool,
+    #[serde(default)]
+    pub effect_target_viewport: bool,
+    #[serde(default)]
     pub viewport_mode: ViewportMode,
     #[serde(default = "default_custom_yaw")]
     pub custom_orbit_yaw: f32,
@@ -649,6 +665,9 @@ impl Default for Composition {
             graph_mode: GraphMode::default(),
             snapping: true,
             solo_animated_properties: false,
+            viewport_effects: vec![],
+            viewport_fx_enabled: true,
+            effect_target_viewport: false,
             viewport_mode: ViewportMode::default(),
             custom_orbit_yaw: default_custom_yaw(),
             custom_orbit_pitch: default_custom_pitch(),

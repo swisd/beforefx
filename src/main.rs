@@ -95,6 +95,28 @@ pub fn get_active_camera(comp: &Composition, time: f32) -> ActiveCamera {
     }
 }
 
+pub fn is_camera_inline_with_z(camera: &ActiveCamera, comp: &Composition) -> bool {
+    if comp.viewport_mode != ViewportMode::ActiveCamera {
+        return false;
+    }
+    if camera.is_custom {
+        let width = comp.settings.width as f32;
+        let height = comp.settings.height as f32;
+        let default_target_x = width / 2.0;
+        let default_target_y = height / 2.0;
+        if (camera.target.x - default_target_x).abs() > 1.0 || (camera.target.y - default_target_y).abs() > 1.0 {
+            return false;
+        }
+        if (camera.position.x - default_target_x).abs() > 1.0 || (camera.position.y - default_target_y).abs() > 1.0 {
+            return false;
+        }
+        if camera.rotation.x.abs() > 0.1 || camera.rotation.y.abs() > 0.1 || camera.rotation.z.abs() > 0.1 {
+            return false;
+        }
+    }
+    true
+}
+
 pub fn get_viewport_camera(comp: &Composition, time: f32) -> ActiveCamera {
     let width = comp.settings.width as f32;
     let height = comp.settings.height as f32;
@@ -1914,6 +1936,184 @@ fn draw_composition(
                     }
                 }
             }
+        } else if !is_camera_inline_with_z(&active_camera, comp) {
+            // ==========================================
+            // 2D LAYER XY-PLANE 3D PROJECTION PASS (Custom View / Angled Camera)
+            // ==========================================
+            match &layer.source {
+                LayerSource::Solid { color } => {
+                    let base_col = Color::new(color[0], color[1], color[2], color[3] * op);
+                    let final_col = apply_color_effects(base_col, layer, time);
+
+                    let corners = [
+                        transform_local_to_world(comp, layer_idx, vec3(0.0, 0.0, 0.0), time),
+                        transform_local_to_world(comp, layer_idx, vec3(200.0, 0.0, 0.0), time),
+                        transform_local_to_world(comp, layer_idx, vec3(200.0, 200.0, 0.0), time),
+                        transform_local_to_world(comp, layer_idx, vec3(0.0, 200.0, 0.0), time),
+                    ];
+                    let proj = [
+                        project_3d_point(corners[0], &active_camera, width, height),
+                        project_3d_point(corners[1], &active_camera, width, height),
+                        project_3d_point(corners[2], &active_camera, width, height),
+                        project_3d_point(corners[3], &active_camera, width, height),
+                    ];
+                    if proj.iter().all(|p| p.visible) {
+                        draw_triangle(proj[0].screen, proj[1].screen, proj[2].screen, final_col);
+                        draw_triangle(proj[0].screen, proj[2].screen, proj[3].screen, final_col);
+                        for i in 0..4 {
+                            draw_line(
+                                proj[i].screen.x,
+                                proj[i].screen.y,
+                                proj[(i + 1) % 4].screen.x,
+                                proj[(i + 1) % 4].screen.y,
+                                1.2,
+                                Color::new(1.0, 1.0, 1.0, op * 0.35),
+                            );
+                        }
+                    }
+                }
+                LayerSource::Image { path } => {
+                    if let Some(tex) = textures.get(path) {
+                        let tw = tex.width();
+                        let th = tex.height();
+                        let base_col = Color::new(1.0, 1.0, 1.0, op);
+                        let final_col = apply_color_effects(base_col, layer, time);
+
+                        let corners = [
+                            transform_local_to_world(comp, layer_idx, vec3(0.0, 0.0, 0.0), time),
+                            transform_local_to_world(comp, layer_idx, vec3(tw, 0.0, 0.0), time),
+                            transform_local_to_world(comp, layer_idx, vec3(tw, th, 0.0), time),
+                            transform_local_to_world(comp, layer_idx, vec3(0.0, th, 0.0), time),
+                        ];
+                        let proj = [
+                            project_3d_point(corners[0], &active_camera, width, height),
+                            project_3d_point(corners[1], &active_camera, width, height),
+                            project_3d_point(corners[2], &active_camera, width, height),
+                            project_3d_point(corners[3], &active_camera, width, height),
+                        ];
+                        if proj.iter().all(|p| p.visible) {
+                            let mesh = Mesh {
+                                vertices: vec![
+                                    Vertex {
+                                        position: vec3(proj[0].screen.x, proj[0].screen.y, 0.0),
+                                        uv: vec2(0.0, 0.0),
+                                        color: final_col.into(),
+                                        normal: vec4(0.0, 0.0, 1.0, 0.0),
+                                    },
+                                    Vertex {
+                                        position: vec3(proj[1].screen.x, proj[1].screen.y, 0.0),
+                                        uv: vec2(1.0, 0.0),
+                                        color: final_col.into(),
+                                        normal: vec4(0.0, 0.0, 1.0, 0.0),
+                                    },
+                                    Vertex {
+                                        position: vec3(proj[2].screen.x, proj[2].screen.y, 0.0),
+                                        uv: vec2(1.0, 1.0),
+                                        color: final_col.into(),
+                                        normal: vec4(0.0, 0.0, 1.0, 0.0),
+                                    },
+                                    Vertex {
+                                        position: vec3(proj[3].screen.x, proj[3].screen.y, 0.0),
+                                        uv: vec2(0.0, 1.0),
+                                        color: final_col.into(),
+                                        normal: vec4(0.0, 0.0, 1.0, 0.0),
+                                    },
+                                ],
+                                indices: vec![0, 1, 2, 0, 2, 3],
+                                texture: Some(tex.clone()),
+                            };
+                            draw_mesh(&mesh);
+                            for i in 0..4 {
+                                draw_line(
+                                    proj[i].screen.x,
+                                    proj[i].screen.y,
+                                    proj[(i + 1) % 4].screen.x,
+                                    proj[(i + 1) % 4].screen.y,
+                                    1.0,
+                                    Color::new(0.4, 0.8, 1.0, op * 0.4),
+                                );
+                            }
+                        }
+                    }
+                }
+                LayerSource::Text { text, font_size, color } => {
+                    let est_w = (text.len() as f32 * font_size * 0.55).max(40.0);
+                    let est_h = *font_size;
+                    let base_col = Color::new(color[0], color[1], color[2], color[3] * op);
+                    let text_col = apply_color_effects(base_col, layer, time);
+
+                    let corners = [
+                        transform_local_to_world(comp, layer_idx, vec3(0.0, 0.0, 0.0), time),
+                        transform_local_to_world(comp, layer_idx, vec3(est_w, 0.0, 0.0), time),
+                        transform_local_to_world(comp, layer_idx, vec3(est_w, est_h, 0.0), time),
+                        transform_local_to_world(comp, layer_idx, vec3(0.0, est_h, 0.0), time),
+                    ];
+                    let proj = [
+                        project_3d_point(corners[0], &active_camera, width, height),
+                        project_3d_point(corners[1], &active_camera, width, height),
+                        project_3d_point(corners[2], &active_camera, width, height),
+                        project_3d_point(corners[3], &active_camera, width, height),
+                    ];
+                    if proj.iter().all(|p| p.visible) {
+                        let scale_factor = (active_camera.zoom / proj[0].depth.max(1.0)).clamp(0.1, 5.0);
+                        draw_text(text, proj[0].screen.x, proj[0].screen.y + est_h * scale_factor, font_size * scale_factor, text_col);
+                        for i in 0..4 {
+                            draw_line(
+                                proj[i].screen.x,
+                                proj[i].screen.y,
+                                proj[(i + 1) % 4].screen.x,
+                                proj[(i + 1) % 4].screen.y,
+                                1.0,
+                                Color::new(1.0, 0.4, 0.7, op * 0.35),
+                            );
+                        }
+                    }
+                }
+                LayerSource::Polygon { points, color } => {
+                    if points.len() >= 3 {
+                        let base_col = Color::new(color[0], color[1], color[2], color[3] * op);
+                        let final_col = apply_color_effects(base_col, layer, time);
+
+                        let proj_pts: Vec<ProjectedPoint> = points
+                            .iter()
+                            .map(|pt| {
+                                let w_pt = transform_local_to_world(
+                                    comp,
+                                    layer_idx,
+                                    vec3(pt[0], pt[1], 0.0),
+                                    time,
+                                );
+                                project_3d_point(w_pt, &active_camera, width, height)
+                            })
+                            .collect();
+
+                        if proj_pts.iter().all(|p| p.visible) {
+                            for i in 1..proj_pts.len() - 1 {
+                                draw_triangle(proj_pts[0].screen, proj_pts[i].screen, proj_pts[i + 1].screen, final_col);
+                            }
+                            for i in 0..proj_pts.len() {
+                                draw_line(
+                                    proj_pts[i].screen.x,
+                                    proj_pts[i].screen.y,
+                                    proj_pts[(i + 1) % proj_pts.len()].screen.x,
+                                    proj_pts[(i + 1) % proj_pts.len()].screen.y,
+                                    1.2,
+                                    Color::new(1.0, 1.0, 1.0, op * 0.4),
+                                );
+                            }
+                        }
+                    }
+                }
+                LayerSource::Video { path } => {
+                    let origin_world = transform_local_to_world(comp, layer_idx, vec3(0.0, 0.0, 0.0), time);
+                    let proj = project_3d_point(origin_world, &active_camera, width, height);
+                    if proj.visible {
+                        let scale_factor = (active_camera.zoom / proj.depth.max(1.0)).clamp(0.05, 10.0);
+                        draw_video_placeholder(path, proj.screen.x, proj.screen.y, scale_factor, scale_factor, op);
+                    }
+                }
+                _ => {}
+            }
         } else {
             // ==========================================
             // 2D LAYER ORTHOGRAPHIC RENDERING PASS
@@ -2341,6 +2541,19 @@ fn draw_composition(
         }
     }
 
+    // ==========================================
+    // VIEWPORT / MASTER COMP EFFECTS PASS
+    // ==========================================
+    if comp.viewport_fx_enabled && !comp.viewport_effects.is_empty() {
+        let mut img = target.texture.get_texture_data();
+        for eff in &comp.viewport_effects {
+            if eff.enabled {
+                crate::plugin::apply_image_builtin_effect(&mut img, eff, time, None);
+            }
+        }
+        target.texture.update(&img);
+    }
+
     set_default_camera();
 }
 
@@ -2360,6 +2573,15 @@ fn get_max_keyframe_time(comp: &Composition) -> f32 {
                     if kf.time > max_time {
                         max_time = kf.time;
                     }
+                }
+            }
+        }
+    }
+    for eff in &comp.viewport_effects {
+        for prop in eff.properties.values() {
+            for kf in &prop.keyframes {
+                if kf.time > max_time {
+                    max_time = kf.time;
                 }
             }
         }
@@ -3517,105 +3739,92 @@ async fn main() {
 
                     // Menu Bar: Effect
                     ui.menu_button("Effect", |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Target:").strong());
+                            if ui.selectable_label(!comp.effect_target_viewport, "🖼 Layer").clicked() {
+                                comp.effect_target_viewport = false;
+                            }
+                            if ui.selectable_label(comp.effect_target_viewport, "🖥 Viewport").clicked() {
+                                comp.effect_target_viewport = true;
+                            }
+                        });
+                        ui.separator();
+
+                        let mut add_effect_target = |eff: LayerEffect| {
+                            if comp.effect_target_viewport {
+                                comp.viewport_effects.push(eff.clone());
+                                export_status = format!("Added effect '{}' to Viewport.", eff.name);
+                            } else if let Some(idx) = comp.active_layer_index {
+                                if let Some(l) = comp.layers.get_mut(idx) {
+                                    l.effects.push(eff.clone());
+                                    export_status = format!("Added effect '{}' to layer.", eff.name);
+                                }
+                            } else {
+                                comp.viewport_effects.push(eff.clone());
+                                export_status = format!("Added effect '{}' to Viewport.", eff.name);
+                            }
+                            history.truncate(history_index + 1);
+                            history.push(comp.clone());
+                            history_index = history.len() - 1;
+                        };
+
+                        ui.menu_button("Glitch & Retro", |ui| {
+                            if ui.button("MP4 Ultra Compress & Corrupt").clicked() {
+                                add_effect_target(LayerEffect::new("MP4 Ultra Compress & Corrupt".to_string(), EffectType::Mp4UltraCompress));
+                                ui.close_menu();
+                            }
+                        });
                         ui.menu_button("Blur & Sharpen", |ui| {
                             if ui.button("Fast Blur").clicked() {
-                                if let Some(idx) = comp.active_layer_index {
-                                    if let Some(l) = comp.layers.get_mut(idx) {
-                                        l.effects.push(LayerEffect::new("Fast Blur".to_string(), EffectType::FastBlur));
-                                    }
-                                }
+                                add_effect_target(LayerEffect::new("Fast Blur".to_string(), EffectType::FastBlur));
                                 ui.close_menu();
                             }
                             if ui.button("Directional Blur").clicked() {
-                                if let Some(idx) = comp.active_layer_index {
-                                    if let Some(l) = comp.layers.get_mut(idx) {
-                                        l.effects.push(LayerEffect::new("Directional Blur".to_string(), EffectType::DirectionalBlur));
-                                    }
-                                }
+                                add_effect_target(LayerEffect::new("Directional Blur".to_string(), EffectType::DirectionalBlur));
                                 ui.close_menu();
                             }
                         });
                         ui.menu_button("Color Correction", |ui| {
                             if ui.button("Brightness & Contrast").clicked() {
-                                if let Some(idx) = comp.active_layer_index {
-                                    if let Some(l) = comp.layers.get_mut(idx) {
-                                        l.effects.push(LayerEffect::new("Brightness & Contrast".to_string(), EffectType::BrightnessContrast));
-                                    }
-                                }
+                                add_effect_target(LayerEffect::new("Brightness & Contrast".to_string(), EffectType::BrightnessContrast));
                                 ui.close_menu();
                             }
                             if ui.button("Hue/Saturation").clicked() {
-                                if let Some(idx) = comp.active_layer_index {
-                                    if let Some(l) = comp.layers.get_mut(idx) {
-                                        l.effects.push(LayerEffect::new("Hue/Saturation".to_string(), EffectType::HueSaturation));
-                                    }
-                                }
+                                add_effect_target(LayerEffect::new("Hue/Saturation".to_string(), EffectType::HueSaturation));
                                 ui.close_menu();
                             }
                             if ui.button("Tint").clicked() {
-                                if let Some(idx) = comp.active_layer_index {
-                                    if let Some(l) = comp.layers.get_mut(idx) {
-                                        l.effects.push(LayerEffect::new("Tint".to_string(), EffectType::Tint));
-                                    }
-                                }
+                                add_effect_target(LayerEffect::new("Tint".to_string(), EffectType::Tint));
                                 ui.close_menu();
                             }
                             if ui.button("Invert").clicked() {
-                                if let Some(idx) = comp.active_layer_index {
-                                    if let Some(l) = comp.layers.get_mut(idx) {
-                                        l.effects.push(LayerEffect::new("Invert".to_string(), EffectType::Invert));
-                                    }
-                                }
+                                add_effect_target(LayerEffect::new("Invert".to_string(), EffectType::Invert));
                                 ui.close_menu();
                             }
                             if ui.button("Fill").clicked() {
-                                if let Some(idx) = comp.active_layer_index {
-                                    if let Some(l) = comp.layers.get_mut(idx) {
-                                        l.effects.push(LayerEffect::new("Fill".to_string(), EffectType::Fill));
-                                    }
-                                }
+                                add_effect_target(LayerEffect::new("Fill".to_string(), EffectType::Fill));
                                 ui.close_menu();
                             }
                         });
                         ui.menu_button("Distort & Stylize", |ui| {
                             if ui.button("Chromatic Aberration").clicked() {
-                                if let Some(idx) = comp.active_layer_index {
-                                    if let Some(l) = comp.layers.get_mut(idx) {
-                                        l.effects.push(LayerEffect::new("Chromatic Aberration".to_string(), EffectType::ChromaticAberration));
-                                    }
-                                }
+                                add_effect_target(LayerEffect::new("Chromatic Aberration".to_string(), EffectType::ChromaticAberration));
                                 ui.close_menu();
                             }
                             if ui.button("Wave Warp").clicked() {
-                                if let Some(idx) = comp.active_layer_index {
-                                    if let Some(l) = comp.layers.get_mut(idx) {
-                                        l.effects.push(LayerEffect::new("Wave Warp".to_string(), EffectType::WaveWarp));
-                                    }
-                                }
+                                add_effect_target(LayerEffect::new("Wave Warp".to_string(), EffectType::WaveWarp));
                                 ui.close_menu();
                             }
                             if ui.button("Glow").clicked() {
-                                if let Some(idx) = comp.active_layer_index {
-                                    if let Some(l) = comp.layers.get_mut(idx) {
-                                        l.effects.push(LayerEffect::new("Glow".to_string(), EffectType::Glow));
-                                    }
-                                }
+                                add_effect_target(LayerEffect::new("Glow".to_string(), EffectType::Glow));
                                 ui.close_menu();
                             }
                             if ui.button("Vignette").clicked() {
-                                if let Some(idx) = comp.active_layer_index {
-                                    if let Some(l) = comp.layers.get_mut(idx) {
-                                        l.effects.push(LayerEffect::new("Vignette".to_string(), EffectType::Vignette));
-                                    }
-                                }
+                                add_effect_target(LayerEffect::new("Vignette".to_string(), EffectType::Vignette));
                                 ui.close_menu();
                             }
                             if ui.button("Drop Shadow").clicked() {
-                                if let Some(idx) = comp.active_layer_index {
-                                    if let Some(l) = comp.layers.get_mut(idx) {
-                                        l.effects.push(LayerEffect::new("Drop Shadow".to_string(), EffectType::DropShadow));
-                                    }
-                                }
+                                add_effect_target(LayerEffect::new("Drop Shadow".to_string(), EffectType::DropShadow));
                                 ui.close_menu();
                             }
                         });
@@ -3633,15 +3842,7 @@ async fn main() {
                                         .on_hover_text(&eff_plug.description)
                                         .clicked()
                                     {
-                                        if let Some(idx) = comp.active_layer_index {
-                                            if let Some(l) = comp.layers.get_mut(idx) {
-                                                l.effects.push(LayerEffect::new_plugin(eff_plug));
-                                                export_status = format!("Added effect '{}' to layer.", eff_plug.name);
-                                                history.truncate(history_index + 1);
-                                                history.push(comp.clone());
-                                                history_index = history.len() - 1;
-                                            }
-                                        }
+                                        add_effect_target(LayerEffect::new_plugin(eff_plug));
                                         ui.close_menu();
                                     }
                                 }

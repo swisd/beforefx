@@ -1,0 +1,13 @@
+.spec effect
+name: MP4 Ultra Compress & Corrupt
+category: Glitch & Retro
+description: Extreme video codec compression artifacts, macroblocking, DCT quantization, chroma bleeding, and datamosh corruption.
+slider: block_size, 16.0, 2.0, 64.0, 2.0
+slider: compression, 75.0, 0.0, 100.0, 1.0
+slider: chroma_loss, 60.0, 0.0, 100.0, 1.0
+slider: corruption, 30.0, 0.0, 100.0, 1.0
+slider: temporal_jitter, 25.0, 0.0, 100.0, 1.0
+slider: noise_dither, 15.0, 0.0, 100.0, 1.0
+slider: mix_amount, 100.0, 0.0, 100.0, 1.0
+
+type: mp4_ultra_compress

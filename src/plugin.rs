@@ -160,6 +160,23 @@ b = mix(b, clamp(gray * tone_b, 0.0, 1.0), mix_amt);
 "#,
             ),
             (
+                "mp4_ultra_compress.bfxplugin",
+                r#".spec effect
+name: MP4 Ultra Compress & Corrupt
+category: Glitch & Retro
+description: Extreme video codec compression artifacts, macroblocking, DCT quantization, chroma bleeding, and datamosh corruption.
+slider: block_size, 16.0, 2.0, 64.0, 2.0
+slider: compression, 75.0, 0.0, 100.0, 1.0
+slider: chroma_loss, 60.0, 0.0, 100.0, 1.0
+slider: corruption, 30.0, 0.0, 100.0, 1.0
+slider: temporal_jitter, 25.0, 0.0, 100.0, 1.0
+slider: noise_dither, 15.0, 0.0, 100.0, 1.0
+slider: mix_amount, 100.0, 0.0, 100.0, 1.0
+
+type: mp4_ultra_compress
+"#,
+            ),
+            (
                 "rgb_channel_shift.bfxplugin",
                 r#".spec effect
 name: RGB Channel Shift
@@ -588,6 +605,20 @@ pub fn apply_effect_plugin(
                 col.b = (col.b * (1.0 - intensity) + (gray * tone_b).clamp(0.0, 1.0) * intensity).clamp(0.0, 1.0);
                 return col;
             }
+            "mp4_ultra_compress" | "mp4_corrupt" | "mp4_ultracompress" | "mp4corrupt" => {
+                let comp = properties.get("compression").map_or(75.0, |p| p.get_value_at(time)) / 100.0;
+                let levels = (256.0 / (1.0 + comp * 31.0)).max(2.0);
+                let corrupt = properties.get("corruption").map_or(30.0, |p| p.get_value_at(time)) / 100.0;
+                let mix_amt = properties.get("mix_amount").map_or(100.0, |p| p.get_value_at(time)) / 100.0;
+                let noise = ((time * 37.17 + col.r * 53.21).sin() * 43758.5453).fract() - 0.5;
+                let q_r = (col.r * levels).round() / levels + noise * corrupt * 0.2;
+                let q_g = (col.g * levels).round() / levels;
+                let q_b = (col.b * levels).round() / levels - noise * corrupt * 0.2;
+                col.r = (col.r * (1.0 - mix_amt) + q_r.clamp(0.0, 1.0) * mix_amt).clamp(0.0, 1.0);
+                col.g = (col.g * (1.0 - mix_amt) + q_g.clamp(0.0, 1.0) * mix_amt).clamp(0.0, 1.0);
+                col.b = (col.b * (1.0 - mix_amt) + q_b.clamp(0.0, 1.0) * mix_amt).clamp(0.0, 1.0);
+                return col;
+            }
             "rgb_split" | "rgb_channel_shift" => {
                 let r_shift = properties.get("red_shift").map_or(15.0, |p| p.get_value_at(time)) / 100.0;
                 let b_shift = properties.get("blue_shift").map_or(-15.0, |p| p.get_value_at(time)) / 100.0;
@@ -859,6 +890,480 @@ fn strip_matched_parens(expr: &str) -> Option<&str> {
         Some(&expr[1..expr.len() - 1])
     } else {
         None
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Texture & Image Processing Engine for Plugins, Viewport, and Objects
+// ------------------------------------------------------------------------------------------------
+
+pub fn apply_image_effect_plugin(
+    img: &mut macroquad::texture::Image,
+    plugin: &EffectPlugin,
+    properties: &HashMap<String, Property>,
+    time: f32,
+) {
+    if let Some(ref bt) = plugin.builtin_type {
+        match bt.to_lowercase().as_str() {
+            "mp4_ultra_compress" | "mp4_corrupt" | "mp4_ultracompress" | "mp4corrupt" => {
+                let block_size = properties.get("block_size").map_or(16.0, |p| p.get_value_at(time));
+                let compression = properties.get("compression").map_or(75.0, |p| p.get_value_at(time));
+                let chroma_loss = properties.get("chroma_loss").map_or(60.0, |p| p.get_value_at(time));
+                let corruption = properties.get("corruption").map_or(30.0, |p| p.get_value_at(time));
+                let temporal_jitter = properties.get("temporal_jitter").map_or(25.0, |p| p.get_value_at(time));
+                let noise_dither = properties.get("noise_dither").map_or(15.0, |p| p.get_value_at(time));
+                let mix_amount = properties.get("mix_amount").map_or(100.0, |p| p.get_value_at(time));
+                process_image_mp4_compress(
+                    img,
+                    block_size,
+                    compression,
+                    chroma_loss,
+                    corruption,
+                    temporal_jitter,
+                    noise_dither,
+                    mix_amount,
+                    time,
+                );
+                return;
+            }
+            "pixelate" | "pixelate_mosaic" => {
+                let size = properties.get("pixel_size").map_or(8.0, |p| p.get_value_at(time));
+                let blend = properties.get("blend").map_or(100.0, |p| p.get_value_at(time));
+                process_image_pixelate(img, size, blend);
+                return;
+            }
+            "rgb_split" | "rgb_channel_shift" => {
+                let r_shift = properties.get("red_shift").map_or(15.0, |p| p.get_value_at(time));
+                let b_shift = properties.get("blue_shift").map_or(-15.0, |p| p.get_value_at(time));
+                let mix_amt = properties.get("mix_amount").map_or(100.0, |p| p.get_value_at(time));
+                process_image_rgb_split(img, r_shift, b_shift, mix_amt);
+                return;
+            }
+            "vignette_grain" => {
+                let vig = properties.get("vignette_amount").map_or(60.0, |p| p.get_value_at(time));
+                let grain = properties.get("grain_intensity").map_or(15.0, |p| p.get_value_at(time));
+                let c_boost = properties.get("contrast_boost").map_or(10.0, |p| p.get_value_at(time));
+                process_image_vignette_grain(img, vig, grain, c_boost, time);
+                return;
+            }
+            _ => {}
+        }
+    }
+
+    if !plugin.formula_lines.is_empty() {
+        process_image_formula(img, plugin, properties, time);
+    }
+}
+
+pub fn apply_image_builtin_effect(
+    img: &mut macroquad::texture::Image,
+    effect: &LayerEffect,
+    time: f32,
+    plugins: Option<&PluginRegistry>,
+) {
+    if !effect.enabled {
+        return;
+    }
+    match &effect.effect_type {
+        EffectType::Mp4UltraCompress => {
+            let block_size = effect.properties.get("block_size").map_or(16.0, |p| p.get_value_at(time));
+            let compression = effect.properties.get("compression").map_or(75.0, |p| p.get_value_at(time));
+            let chroma_loss = effect.properties.get("chroma_loss").map_or(60.0, |p| p.get_value_at(time));
+            let corruption = effect.properties.get("corruption").map_or(30.0, |p| p.get_value_at(time));
+            let temporal_jitter = effect.properties.get("temporal_jitter").map_or(25.0, |p| p.get_value_at(time));
+            let noise_dither = effect.properties.get("noise_dither").map_or(15.0, |p| p.get_value_at(time));
+            let mix_amount = effect.properties.get("mix_amount").map_or(100.0, |p| p.get_value_at(time));
+            process_image_mp4_compress(
+                img,
+                block_size,
+                compression,
+                chroma_loss,
+                corruption,
+                temporal_jitter,
+                noise_dither,
+                mix_amount,
+                time,
+            );
+        }
+        EffectType::Plugin(plugin_name) => {
+            if let Some(reg) = plugins {
+                if let Some(p) = reg.get_effect(plugin_name).or_else(|| reg.get_effect(&effect.name)) {
+                    apply_image_effect_plugin(img, p, &effect.properties, time);
+                }
+            } else {
+                let p_path = PathBuf::from(format!("./plugins/{}.bfxplugin", sanitize_id(plugin_name)));
+                if let Ok(Some(Plugin::Effect(p))) = parse_plugin_file(&p_path) {
+                    apply_image_effect_plugin(img, &p, &effect.properties, time);
+                }
+            }
+        }
+        EffectType::BrightnessContrast => {
+            let br = effect.properties.get("brightness").map_or(0.0, |p| p.get_value_at(time)) / 100.0;
+            let ct = effect.properties.get("contrast").map_or(0.0, |p| p.get_value_at(time)) / 100.0;
+            let factor = (1.0 + ct).max(0.0);
+            for chunk in img.bytes.chunks_exact_mut(4) {
+                let r = (chunk[0] as f32 / 255.0 - 0.5) * factor + 0.5 + br;
+                let g = (chunk[1] as f32 / 255.0 - 0.5) * factor + 0.5 + br;
+                let b = (chunk[2] as f32 / 255.0 - 0.5) * factor + 0.5 + br;
+                chunk[0] = (r.clamp(0.0, 1.0) * 255.0) as u8;
+                chunk[1] = (g.clamp(0.0, 1.0) * 255.0) as u8;
+                chunk[2] = (b.clamp(0.0, 1.0) * 255.0) as u8;
+            }
+        }
+        EffectType::Tint => {
+            let amount = effect.properties.get("amount").map_or(100.0, |p| p.get_value_at(time)) / 100.0;
+            let blk_r = effect.properties.get("blackR").map_or(0.0, |p| p.get_value_at(time)) / 255.0;
+            let blk_g = effect.properties.get("blackG").map_or(0.0, |p| p.get_value_at(time)) / 255.0;
+            let blk_b = effect.properties.get("blackB").map_or(0.0, |p| p.get_value_at(time)) / 255.0;
+            let wht_r = effect.properties.get("whiteR").map_or(255.0, |p| p.get_value_at(time)) / 255.0;
+            let wht_g = effect.properties.get("whiteG").map_or(255.0, |p| p.get_value_at(time)) / 255.0;
+            let wht_b = effect.properties.get("whiteB").map_or(255.0, |p| p.get_value_at(time)) / 255.0;
+            for chunk in img.bytes.chunks_exact_mut(4) {
+                let r = chunk[0] as f32 / 255.0;
+                let g = chunk[1] as f32 / 255.0;
+                let b = chunk[2] as f32 / 255.0;
+                let lum = r * 0.299 + g * 0.587 + b * 0.114;
+                let tr = blk_r + lum * (wht_r - blk_r);
+                let tg = blk_g + lum * (wht_g - blk_g);
+                let tb = blk_b + lum * (wht_b - blk_b);
+                chunk[0] = ((r * (1.0 - amount) + tr * amount).clamp(0.0, 1.0) * 255.0) as u8;
+                chunk[1] = ((g * (1.0 - amount) + tg * amount).clamp(0.0, 1.0) * 255.0) as u8;
+                chunk[2] = ((b * (1.0 - amount) + tb * amount).clamp(0.0, 1.0) * 255.0) as u8;
+            }
+        }
+        EffectType::Invert => {
+            let blend = effect.properties.get("blend").map_or(100.0, |p| p.get_value_at(time)) / 100.0;
+            for chunk in img.bytes.chunks_exact_mut(4) {
+                let r = chunk[0] as f32;
+                let g = chunk[1] as f32;
+                let b = chunk[2] as f32;
+                chunk[0] = (r * (1.0 - blend) + (255.0 - r) * blend).clamp(0.0, 255.0) as u8;
+                chunk[1] = (g * (1.0 - blend) + (255.0 - g) * blend).clamp(0.0, 255.0) as u8;
+                chunk[2] = (b * (1.0 - blend) + (255.0 - b) * blend).clamp(0.0, 255.0) as u8;
+            }
+        }
+        EffectType::ChromaticAberration => {
+            let dist = effect.properties.get("distance").map_or(8.0, |p| p.get_value_at(time));
+            let ang = effect.properties.get("angle").map_or(0.0, |p| p.get_value_at(time)).to_radians();
+            let intens = effect.properties.get("intensity").map_or(100.0, |p| p.get_value_at(time));
+            let r_shift = dist * ang.cos();
+            let b_shift = -dist * ang.cos();
+            process_image_rgb_split(img, r_shift, b_shift, intens);
+        }
+        EffectType::Vignette => {
+            let amt = effect.properties.get("amount").map_or(50.0, |p| p.get_value_at(time));
+            let feather = effect.properties.get("feather").map_or(40.0, |p| p.get_value_at(time));
+            process_image_vignette_grain(img, amt, 0.0, feather * 0.2, time);
+        }
+        _ => {}
+    }
+}
+
+pub fn process_image_mp4_compress(
+    img: &mut macroquad::texture::Image,
+    block_size: f32,
+    compression: f32,
+    chroma_loss: f32,
+    corruption: f32,
+    temporal_jitter: f32,
+    noise_dither: f32,
+    mix_amount: f32,
+    time: f32,
+) {
+    if mix_amount <= 0.001 {
+        return;
+    }
+    let w = img.width as usize;
+    let h = img.height as usize;
+    if w == 0 || h == 0 || img.bytes.len() < w * h * 4 {
+        return;
+    }
+
+    let bs = (block_size.round() as usize).clamp(2, 128);
+    let comp_factor = (compression / 100.0).clamp(0.0, 1.0);
+    let chroma_factor = (chroma_loss / 100.0).clamp(0.0, 1.0);
+    let corrupt_factor = (corruption / 100.0).clamp(0.0, 1.0);
+    let jitter = (temporal_jitter / 100.0).clamp(0.0, 1.0);
+    let dither_factor = (noise_dither / 100.0).clamp(0.0, 1.0);
+    let mix = (mix_amount / 100.0).clamp(0.0, 1.0);
+
+    // Number of quantization levels per color channel
+    let quant_levels = (256.0 / (1.0 + comp_factor * 31.0)).max(2.0);
+
+    let orig_bytes = img.bytes.clone();
+
+    let blocks_x = (w + bs - 1) / bs;
+    let blocks_y = (h + bs - 1) / bs;
+
+    let time_seed = (time * 12.0).floor();
+
+    for by in 0..blocks_y {
+        let y_start = by * bs;
+        let y_end = (y_start + bs).min(h);
+
+        let row_hash = ((by as f32 * 37.17 + time_seed * 91.33).sin() * 43758.5453).fract().abs();
+        let is_corrupted_row = corrupt_factor > 0.05 && row_hash < (corrupt_factor * 0.4);
+        let glitch_dx: isize = if is_corrupted_row {
+            let shift_amount = (((row_hash * 1000.0).sin() * corrupt_factor * (bs as f32 * 4.0)) as isize)
+                + ((time_seed * 7.0).sin() * jitter * 20.0) as isize;
+            shift_amount
+        } else {
+            0
+        };
+
+        for bx in 0..blocks_x {
+            let x_start = bx * bs;
+            let x_end = (x_start + bs).min(w);
+
+            let mut sum_r = 0u32;
+            let mut sum_g = 0u32;
+            let mut sum_b = 0u32;
+            let mut count = 0u32;
+
+            for py in y_start..y_end {
+                for px in x_start..x_end {
+                    let idx = (py * w + px) * 4;
+                    sum_r += orig_bytes[idx] as u32;
+                    sum_g += orig_bytes[idx + 1] as u32;
+                    sum_b += orig_bytes[idx + 2] as u32;
+                    count += 1;
+                }
+            }
+
+            if count == 0 {
+                continue;
+            }
+
+            let avg_r = (sum_r / count) as f32;
+            let avg_g = (sum_g / count) as f32;
+            let avg_b = (sum_b / count) as f32;
+
+            let q_avg_r = ((avg_r / 255.0 * quant_levels).round() / quant_levels * 255.0).clamp(0.0, 255.0);
+            let q_avg_g = ((avg_g / 255.0 * quant_levels).round() / quant_levels * 255.0).clamp(0.0, 255.0);
+            let q_avg_b = ((avg_b / 255.0 * quant_levels).round() / quant_levels * 255.0).clamp(0.0, 255.0);
+
+            for py in y_start..y_end {
+                for px in x_start..x_end {
+                    let src_px = if glitch_dx != 0 {
+                        ((px as isize + glitch_dx).rem_euclid(w as isize)) as usize
+                    } else {
+                        px
+                    };
+                    let src_idx = (py * w + src_px) * 4;
+                    let dst_idx = (py * w + px) * 4;
+
+                    let mut r = orig_bytes[src_idx] as f32;
+                    let mut g = orig_bytes[src_idx + 1] as f32;
+                    let mut b = orig_bytes[src_idx + 2] as f32;
+                    let a = orig_bytes[dst_idx + 3];
+
+                    // Macroblock blend
+                    r = r * (1.0 - comp_factor * 0.75) + q_avg_r * (comp_factor * 0.75);
+                    g = g * (1.0 - comp_factor * 0.75) + q_avg_g * (comp_factor * 0.75);
+                    b = b * (1.0 - comp_factor * 0.75) + q_avg_b * (comp_factor * 0.75);
+
+                    // Quantization of individual pixel
+                    r = ((r / 255.0 * quant_levels).round() / quant_levels * 255.0).clamp(0.0, 255.0);
+                    g = ((g / 255.0 * quant_levels).round() / quant_levels * 255.0).clamp(0.0, 255.0);
+                    b = ((b / 255.0 * quant_levels).round() / quant_levels * 255.0).clamp(0.0, 255.0);
+
+                    // Chroma loss (bleed)
+                    let lum = r * 0.299 + g * 0.587 + b * 0.114;
+                    let cb = (b - lum) * (1.0 - chroma_factor * 0.5) + (q_avg_b - lum) * (chroma_factor * 0.5);
+                    let cr = (r - lum) * (1.0 - chroma_factor * 0.5) + (q_avg_r - lum) * (chroma_factor * 0.5);
+                    r = (lum + 1.402 * cr).clamp(0.0, 255.0);
+                    g = (lum - 0.344136 * cb - 0.714136 * cr).clamp(0.0, 255.0);
+                    b = (lum + 1.772 * cb).clamp(0.0, 255.0);
+
+                    // High frequency dither / noise
+                    if dither_factor > 0.0 {
+                        let noise = ((px as f32 * 12.9898 + py as f32 * 78.233 + time_seed * 43.1).sin() * 43758.5453).fract() - 0.5;
+                        r = (r + noise * dither_factor * 40.0).clamp(0.0, 255.0);
+                        g = (g + noise * dither_factor * 40.0).clamp(0.0, 255.0);
+                        b = (b + noise * dither_factor * 40.0).clamp(0.0, 255.0);
+                    }
+
+                    let orig_r = orig_bytes[dst_idx] as f32;
+                    let orig_g = orig_bytes[dst_idx + 1] as f32;
+                    let orig_b = orig_bytes[dst_idx + 2] as f32;
+
+                    img.bytes[dst_idx] = (orig_r * (1.0 - mix) + r * mix).clamp(0.0, 255.0) as u8;
+                    img.bytes[dst_idx + 1] = (orig_g * (1.0 - mix) + g * mix).clamp(0.0, 255.0) as u8;
+                    img.bytes[dst_idx + 2] = (orig_b * (1.0 - mix) + b * mix).clamp(0.0, 255.0) as u8;
+                    img.bytes[dst_idx + 3] = a;
+                }
+            }
+        }
+    }
+}
+
+pub fn process_image_pixelate(img: &mut macroquad::texture::Image, pixel_size: f32, blend: f32) {
+    if blend <= 0.001 || pixel_size <= 1.0 {
+        return;
+    }
+    let w = img.width as usize;
+    let h = img.height as usize;
+    if w == 0 || h == 0 || img.bytes.len() < w * h * 4 {
+        return;
+    }
+    let ps = (pixel_size.round() as usize).clamp(1, 128);
+    let mix = (blend / 100.0).clamp(0.0, 1.0);
+    let orig = img.bytes.clone();
+
+    for by in (0..h).step_by(ps) {
+        let y_max = (by + ps).min(h);
+        for bx in (0..w).step_by(ps) {
+            let x_max = (bx + ps).min(w);
+            let center_x = (bx + x_max) / 2;
+            let center_y = (by + y_max) / 2;
+            let sample_idx = (center_y * w + center_x) * 4;
+            let sr = orig[sample_idx] as f32;
+            let sg = orig[sample_idx + 1] as f32;
+            let sb = orig[sample_idx + 2] as f32;
+
+            for py in by..y_max {
+                for px in bx..x_max {
+                    let idx = (py * w + px) * 4;
+                    let r = orig[idx] as f32;
+                    let g = orig[idx + 1] as f32;
+                    let b = orig[idx + 2] as f32;
+                    img.bytes[idx] = (r * (1.0 - mix) + sr * mix).clamp(0.0, 255.0) as u8;
+                    img.bytes[idx + 1] = (g * (1.0 - mix) + sg * mix).clamp(0.0, 255.0) as u8;
+                    img.bytes[idx + 2] = (b * (1.0 - mix) + sb * mix).clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+    }
+}
+
+pub fn process_image_rgb_split(img: &mut macroquad::texture::Image, red_shift: f32, blue_shift: f32, mix_amount: f32) {
+    if mix_amount <= 0.001 {
+        return;
+    }
+    let w = img.width as usize;
+    let h = img.height as usize;
+    if w == 0 || h == 0 || img.bytes.len() < w * h * 4 {
+        return;
+    }
+    let mix = (mix_amount / 100.0).clamp(0.0, 1.0);
+    let r_dx = red_shift.round() as isize;
+    let b_dx = blue_shift.round() as isize;
+    let orig = img.bytes.clone();
+
+    for y in 0..h {
+        for x in 0..w {
+            let idx = (y * w + x) * 4;
+            let rx = (x as isize + r_dx).clamp(0, (w - 1) as isize) as usize;
+            let bx = (x as isize + b_dx).clamp(0, (w - 1) as isize) as usize;
+            let r_idx = (y * w + rx) * 4;
+            let b_idx = (y * w + bx) * 4;
+
+            let shifted_r = orig[r_idx] as f32;
+            let shifted_b = orig[b_idx + 2] as f32;
+            let orig_r = orig[idx] as f32;
+            let orig_b = orig[idx + 2] as f32;
+
+            img.bytes[idx] = (orig_r * (1.0 - mix) + shifted_r * mix).clamp(0.0, 255.0) as u8;
+            img.bytes[idx + 2] = (orig_b * (1.0 - mix) + shifted_b * mix).clamp(0.0, 255.0) as u8;
+        }
+    }
+}
+
+pub fn process_image_vignette_grain(
+    img: &mut macroquad::texture::Image,
+    vignette_amount: f32,
+    grain_intensity: f32,
+    contrast_boost: f32,
+    time: f32,
+) {
+    let w = img.width as usize;
+    let h = img.height as usize;
+    if w == 0 || h == 0 || img.bytes.len() < w * h * 4 {
+        return;
+    }
+    let vig = (vignette_amount / 100.0).clamp(0.0, 1.0);
+    let grain = (grain_intensity / 100.0).clamp(0.0, 1.0);
+    let factor = (1.0 + contrast_boost / 100.0).max(0.0);
+    let center_x = w as f32 / 2.0;
+    let center_y = h as f32 / 2.0;
+    let max_dist = (center_x * center_x + center_y * center_y).sqrt();
+
+    let time_seed = time * 123.45;
+
+    for y in 0..h {
+        let dy = y as f32 - center_y;
+        for x in 0..w {
+            let dx = x as f32 - center_x;
+            let dist_norm = (dx * dx + dy * dy).sqrt() / max_dist.max(1.0);
+            let vig_factor = (1.0 - dist_norm * dist_norm * vig).clamp(0.0, 1.0);
+            let noise = ((x as f32 * 12.9898 + y as f32 * 78.233 + time_seed).sin() * 43758.5453).fract() - 0.5;
+            let grain_val = noise * grain * 40.0;
+
+            let idx = (y * w + x) * 4;
+            let mut r = img.bytes[idx] as f32;
+            let mut g = img.bytes[idx + 1] as f32;
+            let mut b = img.bytes[idx + 2] as f32;
+
+            r = (((r / 255.0 - 0.5) * factor + 0.5) * vig_factor * 255.0 + grain_val).clamp(0.0, 255.0);
+            g = (((g / 255.0 - 0.5) * factor + 0.5) * vig_factor * 255.0 + grain_val).clamp(0.0, 255.0);
+            b = (((b / 255.0 - 0.5) * factor + 0.5) * vig_factor * 255.0 + grain_val).clamp(0.0, 255.0);
+
+            img.bytes[idx] = r as u8;
+            img.bytes[idx + 1] = g as u8;
+            img.bytes[idx + 2] = b as u8;
+        }
+    }
+}
+
+pub fn process_image_formula(
+    img: &mut macroquad::texture::Image,
+    plugin: &EffectPlugin,
+    properties: &HashMap<String, Property>,
+    time: f32,
+) {
+    if plugin.formula_lines.is_empty() {
+        return;
+    }
+    let mut base_vars: HashMap<String, f32> = HashMap::new();
+    base_vars.insert("time".to_string(), time);
+    for slider in &plugin.sliders {
+        let val = properties
+            .get(&slider.name)
+            .map_or(slider.default_value, |p| p.get_value_at(time));
+        base_vars.insert(slider.name.clone(), val);
+    }
+
+    for chunk in img.bytes.chunks_exact_mut(4) {
+        let mut vars = base_vars.clone();
+        vars.insert("r".to_string(), chunk[0] as f32 / 255.0);
+        vars.insert("g".to_string(), chunk[1] as f32 / 255.0);
+        vars.insert("b".to_string(), chunk[2] as f32 / 255.0);
+        vars.insert("a".to_string(), chunk[3] as f32 / 255.0);
+
+        for raw_stmt in &plugin.formula_lines {
+            let stmt = raw_stmt.trim().trim_end_matches(';');
+            if stmt.is_empty() {
+                continue;
+            }
+            if let Some((target_var, expr)) = stmt.split_once('=') {
+                let target = target_var.trim().trim_start_matches("let ").trim();
+                let val = evaluate_expression(expr.trim(), &vars);
+                vars.insert(target.to_string(), val);
+            }
+        }
+
+        if let Some(&r) = vars.get("r") {
+            chunk[0] = (r.clamp(0.0, 1.0) * 255.0) as u8;
+        }
+        if let Some(&g) = vars.get("g") {
+            chunk[1] = (g.clamp(0.0, 1.0) * 255.0) as u8;
+        }
+        if let Some(&b) = vars.get("b") {
+            chunk[2] = (b.clamp(0.0, 1.0) * 255.0) as u8;
+        }
+        if let Some(&a) = vars.get("a") {
+            chunk[3] = (a.clamp(0.0, 1.0) * 255.0) as u8;
+        }
     }
 }
 
