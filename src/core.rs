@@ -21,14 +21,14 @@ pub enum CurveHandle {
     In,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Keyframe {
     pub time: f32,
     pub value: f32,
     pub ease: Option<BezierControl>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Property {
     pub name: String,
     pub base_value: f32,
@@ -65,7 +65,7 @@ impl Property {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub enum LayerSource {
     Solid {
         color: [f32; 4],
@@ -87,9 +87,16 @@ pub enum LayerSource {
         points: Vec<[f32; 2]>,
         color: [f32; 4],
     },
+    Text {
+        text: String,
+        font_size: f32,
+        color: [f32; 4],
+    },
+    Adjustment,
+    Null,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Layer {
     pub name: String,
     pub source: LayerSource,
@@ -100,7 +107,7 @@ pub struct Layer {
     pub locked: bool,
     #[serde(default)]
     pub solo: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub fx: bool,
     #[serde(default)]
     pub d3: bool,
@@ -114,6 +121,30 @@ pub struct Layer {
     pub collapse: bool,
     #[serde(default)]
     pub collapsed: bool,
+    #[serde(default)]
+    pub in_time: f32,
+    #[serde(default = "default_out_time")]
+    pub out_time: f32,
+    #[serde(default)]
+    pub label_color_index: usize,
+    #[serde(default = "default_blend_mode")]
+    pub blend_mode: String,
+    #[serde(default)]
+    pub parent_index: Option<usize>,
+    #[serde(default = "default_track_matte")]
+    pub track_matte: String,
+}
+
+fn default_out_time() -> f32 {
+    30.0
+}
+
+fn default_blend_mode() -> String {
+    "Normal".to_string()
+}
+
+fn default_track_matte() -> String {
+    "None".to_string()
 }
 
 fn default_true() -> bool {
@@ -219,4 +250,44 @@ pub struct Composition {
     pub timeline_scroll_h: f32,
     #[serde(default)]
     pub settings: Settings,
+    #[serde(default)]
+    pub active_layer_index: Option<usize>,
+    #[serde(default)]
+    pub work_area_in: f32,
+    #[serde(default = "default_duration")]
+    pub work_area_out: f32,
+    #[serde(default = "default_zoom")]
+    pub timeline_zoom: f32,
+    #[serde(default)]
+    pub hide_shy: bool,
+    #[serde(default)]
+    pub switches_mode: bool,
+    #[serde(default)]
+    pub active_tool: usize,
+    #[serde(default)]
+    pub right_panel_tab: usize,
+    #[serde(default)]
+    pub left_panel_tab: usize,
+    #[serde(default = "default_true")]
+    pub show_guides: bool,
+    #[serde(default)]
+    pub show_grid: bool,
+    #[serde(default)]
+    pub show_rulers: bool,
+    #[serde(default)]
+    pub show_checkerboard: bool,
+    #[serde(default = "default_comp_zoom")]
+    pub comp_zoom: f32,
+    #[serde(default)]
+    pub search_query: String,
+    #[serde(default)]
+    pub layer_search_query: String,
+}
+
+fn default_zoom() -> f32 {
+    100.0
+}
+
+fn default_comp_zoom() -> f32 {
+    1.0
 }
