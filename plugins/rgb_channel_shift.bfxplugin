@@ -1,0 +1,9 @@
+.spec effect
+name: RGB Channel Shift
+category: Distort & Stylize
+description: Shifts red and blue color channels for a chromatic glitch look.
+slider: red_shift, 15.0, -100.0, 100.0, 1.0
+slider: blue_shift, -15.0, -100.0, 100.0, 1.0
+slider: mix_amount, 100.0, 0.0, 100.0, 1.0
+
+type: rgb_split

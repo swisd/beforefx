@@ -1,0 +1,9 @@
+.spec effect
+name: Film Vignette & Grain
+category: Stylize
+description: Adds film grain texture and optical edge shading.
+slider: vignette_amount, 60.0, 0.0, 100.0, 1.0
+slider: grain_intensity, 15.0, 0.0, 100.0, 1.0
+slider: contrast_boost, 10.0, -50.0, 50.0, 1.0
+
+type: vignette_grain

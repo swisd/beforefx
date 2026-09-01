@@ -1,0 +1,5 @@
+.spec functional
+name: Easy Ease All Keyframes
+category: Animation Tools
+description: Converts all keyframes in the active layer to smooth cubic Bezier Easy Ease.
+action: easy_ease_all

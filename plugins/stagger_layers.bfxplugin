@@ -1,0 +1,7 @@
+.spec functional
+name: Stagger Layers
+category: Animation Tools
+description: Staggers layer in-points across the timeline in sequential steps.
+action: stagger_layers
+slider: offset_seconds, 0.25, 0.01, 2.0, 0.05
+slider: reverse_order, 0.0, 0.0, 1.0, 1.0

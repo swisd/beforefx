@@ -1,0 +1,5 @@
+.spec functional
+name: Add Master Adjustment FX
+category: Layers & FX
+description: Creates a full-composition adjustment layer and attaches standard mastering FX.
+action: add_adjustment_layer

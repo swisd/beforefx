@@ -1,0 +1,7 @@
+.spec functional
+name: Create 3D Camera Rig
+category: Cameras & 3D
+description: Creates a 3D Camera with an Orbit Null Controller and automated motion keyframes.
+action: add_camera_rig
+slider: distance, 1800.0, 500.0, 5000.0, 50.0
+slider: orbit_speed, 1.0, 0.1, 10.0, 0.1

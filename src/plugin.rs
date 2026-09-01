@@ -1,0 +1,1295 @@
+use crate::core::*;
+use macroquad::color::Color;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PluginKind {
+    Effect,
+    Functional,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PluginSlider {
+    pub name: String,
+    pub display_name: String,
+    pub default_value: f32,
+    pub min_value: f32,
+    pub max_value: f32,
+    pub step: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EffectPlugin {
+    pub id: String,
+    pub name: String,
+    pub category: String,
+    pub description: String,
+    pub file_path: String,
+    pub sliders: Vec<PluginSlider>,
+    pub formula_lines: Vec<String>,
+    pub builtin_type: Option<String>,
+    pub glsl_shader: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FunctionalPlugin {
+    pub id: String,
+    pub name: String,
+    pub category: String,
+    pub description: String,
+    pub file_path: String,
+    pub action: String,
+    pub script_commands: Vec<String>,
+    pub sliders: Vec<PluginSlider>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Plugin {
+    Effect(EffectPlugin),
+    Functional(FunctionalPlugin),
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PluginRegistry {
+    pub effects: Vec<EffectPlugin>,
+    pub functionals: Vec<FunctionalPlugin>,
+    pub load_errors: Vec<(String, String)>,
+    pub plugins_dir: PathBuf,
+}
+
+impl PluginRegistry {
+    pub fn new() -> Self {
+        let plugins_dir = PathBuf::from("./plugins");
+        let mut reg = Self {
+            effects: Vec::new(),
+            functionals: Vec::new(),
+            load_errors: Vec::new(),
+            plugins_dir,
+        };
+        reg.ensure_default_plugins();
+        reg.reload();
+        reg
+    }
+
+    pub fn reload(&mut self) {
+        self.effects.clear();
+        self.functionals.clear();
+        self.load_errors.clear();
+
+        if !self.plugins_dir.exists() {
+            let _ = fs::create_dir_all(&self.plugins_dir);
+        }
+
+        if let Ok(entries) = fs::read_dir(&self.plugins_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    match parse_plugin_file(&path) {
+                        Ok(Some(Plugin::Effect(eff))) => {
+                            self.effects.push(eff);
+                        }
+                        Ok(Some(Plugin::Functional(func))) => {
+                            self.functionals.push(func);
+                        }
+                        Ok(None) => {
+                            // Not a plugin file (e.g. no .spec header)
+                        }
+                        Err(e) => {
+                            self.load_errors.push((
+                                path.file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .to_string(),
+                                e,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort plugins alphabetically by category then name
+        self.effects.sort_by(|a, b| {
+            a.category
+                .cmp(&b.category)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        self.functionals.sort_by(|a, b| {
+            a.category
+                .cmp(&b.category)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+    }
+
+    pub fn get_effect(&self, name: &str) -> Option<&EffectPlugin> {
+        self.effects.iter().find(|e| e.name == name || e.id == name)
+    }
+
+    #[allow(dead_code)]
+    pub fn get_functional(&self, name: &str) -> Option<&FunctionalPlugin> {
+        self.functionals.iter().find(|f| f.name == name || f.id == name)
+    }
+
+    pub fn ensure_default_plugins(&self) {
+        if !self.plugins_dir.exists() {
+            let _ = fs::create_dir_all(&self.plugins_dir);
+        }
+
+        // Write sample plugins if they don't already exist
+        let default_plugins = [
+            (
+                "sepia_tone.bfxplugin",
+                r#".spec effect
+name: Sepia Tone
+category: Color Correction
+description: Gives footage or layers a warm nostalgic sepia tint.
+slider: intensity, 80.0, 0.0, 100.0, 1.0
+slider: tone_r, 1.2, 0.0, 2.0, 0.05
+slider: tone_g, 1.0, 0.0, 2.0, 0.05
+slider: tone_b, 0.75, 0.0, 2.0, 0.05
+
+// Color formula for Sepia
+gray = r * 0.299 + g * 0.587 + b * 0.114;
+mix_amt = intensity / 100.0;
+r = mix(r, clamp(gray * tone_r, 0.0, 1.0), mix_amt);
+g = mix(g, clamp(gray * tone_g, 0.0, 1.0), mix_amt);
+b = mix(b, clamp(gray * tone_b, 0.0, 1.0), mix_amt);
+"#,
+            ),
+            (
+                "rgb_channel_shift.bfxplugin",
+                r#".spec effect
+name: RGB Channel Shift
+category: Distort & Stylize
+description: Shifts red and blue color channels for a chromatic glitch look.
+slider: red_shift, 15.0, -100.0, 100.0, 1.0
+slider: blue_shift, -15.0, -100.0, 100.0, 1.0
+slider: mix_amount, 100.0, 0.0, 100.0, 1.0
+
+type: rgb_split
+"#,
+            ),
+            (
+                "pixelate_mosaic.bfxplugin",
+                r#".spec effect
+name: Pixelate Mosaic
+category: Stylize
+description: Creates a retro pixel art mosaic look.
+slider: pixel_size, 8.0, 1.0, 64.0, 1.0
+slider: blend, 100.0, 0.0, 100.0, 1.0
+
+type: pixelate
+"#,
+            ),
+            (
+                "vignette_grain.bfxplugin",
+                r#".spec effect
+name: Film Vignette & Grain
+category: Stylize
+description: Adds film grain texture and optical edge shading.
+slider: vignette_amount, 60.0, 0.0, 100.0, 1.0
+slider: grain_intensity, 15.0, 0.0, 100.0, 1.0
+slider: contrast_boost, 10.0, -50.0, 50.0, 1.0
+
+type: vignette_grain
+"#,
+            ),
+            (
+                "color_grading_lut.bfxplugin",
+                r#".spec effect
+name: Cinematic Grade
+category: Color Correction
+description: Applies a cinematic teal and orange color grading look.
+slider: teal_shadows, 40.0, 0.0, 100.0, 1.0
+slider: orange_highlights, 45.0, 0.0, 100.0, 1.0
+slider: contrast, 20.0, -50.0, 50.0, 1.0
+slider: saturation, 15.0, -100.0, 100.0, 1.0
+
+// Cinematic teal & orange grading formula
+lum = r * 0.299 + g * 0.587 + b * 0.114;
+teal_factor = (1.0 - lum) * (teal_shadows / 100.0);
+orange_factor = lum * (orange_highlights / 100.0);
+c_factor = (1.0 + contrast / 100.0);
+
+r = ((r - 0.5) * c_factor + 0.5 + orange_factor * 0.3 - teal_factor * 0.2);
+g = ((g - 0.5) * c_factor + 0.5 + orange_factor * 0.1);
+b = ((b - 0.5) * c_factor + 0.5 + teal_factor * 0.4 - orange_factor * 0.2);
+
+sat_boost = 1.0 + saturation / 100.0;
+gray = r * 0.299 + g * 0.587 + b * 0.114;
+r = mix(gray, r, sat_boost);
+g = mix(gray, g, sat_boost);
+b = mix(gray, b, sat_boost);
+"#,
+            ),
+            (
+                "create_camera_rig.bfxplugin",
+                r#".spec functional
+name: Create 3D Camera Rig
+category: Cameras & 3D
+description: Creates a 3D Camera with an Orbit Null Controller and automated motion keyframes.
+action: add_camera_rig
+slider: distance, 1800.0, 500.0, 5000.0, 50.0
+slider: orbit_speed, 1.0, 0.1, 10.0, 0.1
+"#,
+            ),
+            (
+                "stagger_layers.bfxplugin",
+                r#".spec functional
+name: Stagger Layers
+category: Animation Tools
+description: Staggers layer in-points across the timeline in sequential steps.
+action: stagger_layers
+slider: offset_seconds, 0.25, 0.01, 2.0, 0.05
+slider: reverse_order, 0.0, 0.0, 1.0, 1.0
+"#,
+            ),
+            (
+                "easy_ease_all.bfxplugin",
+                r#".spec functional
+name: Easy Ease All Keyframes
+category: Animation Tools
+description: Converts all keyframes in the active layer to smooth cubic Bezier Easy Ease.
+action: easy_ease_all
+"#,
+            ),
+            (
+                "add_adjustment_fx.bfxplugin",
+                r#".spec functional
+name: Add Master Adjustment FX
+category: Layers & FX
+description: Creates a full-composition adjustment layer and attaches standard mastering FX.
+action: add_adjustment_layer
+"#,
+            ),
+            (
+                "color_palette_solids.bfxplugin",
+                r#".spec functional
+name: Generate Color Palette Solids
+category: Design & Utilities
+description: Generates a balanced 5-color aesthetic solid palette across the composition.
+action: create_palette_solids
+"#,
+            ),
+        ];
+
+        for (filename, content) in default_plugins {
+            let p = self.plugins_dir.join(filename);
+            if !p.exists() {
+                let _ = fs::write(&p, content);
+            }
+        }
+    }
+}
+
+/// Parses a plugin file based on `.spec effect` or `.spec functional` header
+pub fn parse_plugin_file(path: &Path) -> Result<Option<Plugin>, String> {
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    parse_plugin_content(&content, path.to_string_lossy().as_ref())
+}
+
+pub fn parse_plugin_content(content: &str, file_path: &str) -> Result<Option<Plugin>, String> {
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.is_empty() {
+        return Ok(None);
+    }
+
+    // Look for .spec directive in the first 25 non-empty lines
+    let mut kind: Option<PluginKind> = None;
+    for line in lines.iter().take(25) {
+        let trimmed = clean_comment(line).trim();
+        if trimmed.starts_with(".spec") || trimmed.starts_with("spec:") {
+            let spec_val = trimmed
+                .trim_start_matches(".spec")
+                .trim_start_matches("spec:")
+                .trim()
+                .to_lowercase();
+            if spec_val.contains("effect") {
+                kind = Some(PluginKind::Effect);
+                break;
+            } else if spec_val.contains("functional") || spec_val.contains("function") || spec_val.contains("tool") {
+                kind = Some(PluginKind::Functional);
+                break;
+            }
+        }
+    }
+
+    let kind = match kind {
+        Some(k) => k,
+        None => return Ok(None),
+    };
+
+    let default_name = Path::new(file_path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "Custom Plugin".to_string())
+        .replace('_', " ");
+
+    let mut name = String::new();
+    let mut category = String::new();
+    let mut description = String::new();
+    let mut action = String::new();
+    let mut builtin_type = None;
+    let mut sliders = Vec::new();
+    let mut formula_lines = Vec::new();
+    let mut script_commands = Vec::new();
+    let mut glsl_lines = Vec::new();
+    let mut in_glsl = false;
+
+    for raw_line in &lines {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if line.starts_with("@glsl") {
+            in_glsl = true;
+            continue;
+        }
+        if line.starts_with("@end") {
+            in_glsl = false;
+            continue;
+        }
+        if in_glsl {
+            glsl_lines.push(raw_line.to_string());
+            continue;
+        }
+
+        let clean = clean_comment(line).trim().to_string();
+        if clean.is_empty() {
+            continue;
+        }
+
+        if clean.starts_with(".spec") || clean.starts_with("spec:") {
+            continue;
+        }
+
+        // Key-value parsing
+        if let Some(rest) = strip_prefix_ci(&clean, "name:")
+            .or_else(|| strip_prefix_ci(&clean, ".name"))
+        {
+            name = rest.trim().to_string();
+            continue;
+        }
+
+        if let Some(rest) = strip_prefix_ci(&clean, "category:")
+            .or_else(|| strip_prefix_ci(&clean, ".category"))
+        {
+            category = rest.trim().to_string();
+            continue;
+        }
+
+        if let Some(rest) = strip_prefix_ci(&clean, "description:")
+            .or_else(|| strip_prefix_ci(&clean, ".description"))
+            .or_else(|| strip_prefix_ci(&clean, "desc:"))
+        {
+            description = rest.trim().to_string();
+            continue;
+        }
+
+        if let Some(rest) = strip_prefix_ci(&clean, "action:")
+            .or_else(|| strip_prefix_ci(&clean, ".action"))
+        {
+            action = rest.trim().to_string();
+            continue;
+        }
+
+        if let Some(rest) = strip_prefix_ci(&clean, "type:")
+            .or_else(|| strip_prefix_ci(&clean, ".type"))
+        {
+            builtin_type = Some(rest.trim().to_string());
+            continue;
+        }
+
+        if let Some(rest) = strip_prefix_ci(&clean, "slider:")
+            .or_else(|| strip_prefix_ci(&clean, "property:"))
+            .or_else(|| strip_prefix_ci(&clean, "param:"))
+            .or_else(|| strip_prefix_ci(&clean, ".slider"))
+            .or_else(|| strip_prefix_ci(&clean, ".property"))
+        {
+            if let Some(slider) = parse_slider_def(rest) {
+                sliders.push(slider);
+            }
+            continue;
+        }
+
+        if kind == PluginKind::Functional {
+            script_commands.push(clean.clone());
+        } else {
+            if clean.contains('=') || clean.starts_with("let ") || clean.contains(';') {
+                formula_lines.push(clean.clone());
+            }
+        }
+    }
+
+    if name.is_empty() {
+        name = default_name;
+    }
+    if category.is_empty() {
+        category = match kind {
+            PluginKind::Effect => "Plugins".to_string(),
+            PluginKind::Functional => "Utilities".to_string(),
+        };
+    }
+
+    let id = sanitize_id(&name);
+
+    match kind {
+        PluginKind::Effect => Ok(Some(Plugin::Effect(EffectPlugin {
+            id,
+            name,
+            category,
+            description,
+            file_path: file_path.to_string(),
+            sliders,
+            formula_lines,
+            builtin_type,
+            glsl_shader: if glsl_lines.is_empty() {
+                None
+            } else {
+                Some(glsl_lines.join("\n"))
+            },
+        }))),
+        PluginKind::Functional => Ok(Some(Plugin::Functional(FunctionalPlugin {
+            id,
+            name,
+            category,
+            description,
+            file_path: file_path.to_string(),
+            action,
+            script_commands,
+            sliders,
+        }))),
+    }
+}
+
+fn clean_comment(line: &str) -> &str {
+    let mut s = line.trim();
+    while s.starts_with("//") || s.starts_with('#') || s.starts_with("--") || s.starts_with("/*") || s.starts_with('*') {
+        if s.starts_with("//") || s.starts_with("--") || s.starts_with("/*") {
+            s = &s[2..];
+        } else {
+            s = &s[1..];
+        }
+        s = s.trim_start();
+    }
+    s
+}
+
+fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    if s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix) {
+        Some(&s[prefix.len()..])
+    } else {
+        None
+    }
+}
+
+fn parse_slider_def(def: &str) -> Option<PluginSlider> {
+    // Formats supported:
+    // slider: name, default, min, max, step
+    // slider: name default min max
+    // slider: name = default
+    let parts: Vec<&str> = if def.contains(',') {
+        def.split(',').map(|s| s.trim()).collect()
+    } else if def.contains('=') {
+        let kv: Vec<&str> = def.split('=').map(|s| s.trim()).collect();
+        return Some(PluginSlider {
+            name: kv[0].to_string(),
+            display_name: format_display_name(kv[0]),
+            default_value: kv.get(1).and_then(|v| v.parse().ok()).unwrap_or(0.0),
+            min_value: -100.0,
+            max_value: 100.0,
+            step: 1.0,
+        });
+    } else {
+        def.split_whitespace().collect()
+    };
+
+    if parts.is_empty() {
+        return None;
+    }
+
+    let name = parts[0].to_string();
+    let display_name = format_display_name(&name);
+    let default_value = parts.get(1).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let min_value = parts.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let max_value = parts.get(3).and_then(|v| v.parse().ok()).unwrap_or(100.0);
+    let step = parts.get(4).and_then(|v| v.parse().ok()).unwrap_or(1.0);
+
+    Some(PluginSlider {
+        name,
+        display_name,
+        default_value,
+        min_value,
+        max_value,
+        step,
+    })
+}
+
+pub fn format_display_name(raw: &str) -> String {
+    if raw.contains('_') {
+        raw.split('_')
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                let mut c = s.chars();
+                match c.next() {
+                    None => String::new(),
+                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        let mut res = String::new();
+        for (i, ch) in raw.chars().enumerate() {
+            if i == 0 {
+                res.extend(ch.to_uppercase());
+            } else if ch.is_uppercase() {
+                res.push(' ');
+                res.push(ch);
+            } else {
+                res.push(ch);
+            }
+        }
+        res
+    }
+}
+
+pub fn sanitize_id(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .collect()
+}
+
+// ------------------------------------------------------------------------------------------------
+// Effect Plugin Evaluator
+// ------------------------------------------------------------------------------------------------
+
+pub fn apply_effect_plugin(
+    mut col: Color,
+    plugin: &EffectPlugin,
+    properties: &HashMap<String, Property>,
+    time: f32,
+) -> Color {
+    // Check for built-in type shortcut first
+    if let Some(ref bt) = plugin.builtin_type {
+        match bt.to_lowercase().as_str() {
+            "sepia" => {
+                let intensity = properties.get("intensity").map_or(80.0, |p| p.get_value_at(time)) / 100.0;
+                let tone_r = properties.get("tone_r").map_or(1.2, |p| p.get_value_at(time));
+                let tone_g = properties.get("tone_g").map_or(1.0, |p| p.get_value_at(time));
+                let tone_b = properties.get("tone_b").map_or(0.75, |p| p.get_value_at(time));
+                let gray = col.r * 0.299 + col.g * 0.587 + col.b * 0.114;
+                col.r = (col.r * (1.0 - intensity) + (gray * tone_r).clamp(0.0, 1.0) * intensity).clamp(0.0, 1.0);
+                col.g = (col.g * (1.0 - intensity) + (gray * tone_g).clamp(0.0, 1.0) * intensity).clamp(0.0, 1.0);
+                col.b = (col.b * (1.0 - intensity) + (gray * tone_b).clamp(0.0, 1.0) * intensity).clamp(0.0, 1.0);
+                return col;
+            }
+            "rgb_split" | "rgb_channel_shift" => {
+                let r_shift = properties.get("red_shift").map_or(15.0, |p| p.get_value_at(time)) / 100.0;
+                let b_shift = properties.get("blue_shift").map_or(-15.0, |p| p.get_value_at(time)) / 100.0;
+                let mix_amt = properties.get("mix_amount").map_or(100.0, |p| p.get_value_at(time)) / 100.0;
+                let shifted_r = (col.r * (1.0 + r_shift * 0.5)).clamp(0.0, 1.0);
+                let shifted_b = (col.b * (1.0 + b_shift * 0.5)).clamp(0.0, 1.0);
+                col.r = col.r * (1.0 - mix_amt) + shifted_r * mix_amt;
+                col.b = col.b * (1.0 - mix_amt) + shifted_b * mix_amt;
+                return col;
+            }
+            "pixelate" => {
+                let blend = properties.get("blend").map_or(100.0, |p| p.get_value_at(time)) / 100.0;
+                let size = properties.get("pixel_size").map_or(8.0, |p| p.get_value_at(time)).max(1.0);
+                let steps = (32.0 / size).max(2.0);
+                let quant_r = (col.r * steps).round() / steps;
+                let quant_g = (col.g * steps).round() / steps;
+                let quant_b = (col.b * steps).round() / steps;
+                col.r = col.r * (1.0 - blend) + quant_r * blend;
+                col.g = col.g * (1.0 - blend) + quant_g * blend;
+                col.b = col.b * (1.0 - blend) + quant_b * blend;
+                return col;
+            }
+            "vignette_grain" => {
+                let vig = properties.get("vignette_amount").map_or(60.0, |p| p.get_value_at(time)) / 100.0;
+                let grain = properties.get("grain_intensity").map_or(15.0, |p| p.get_value_at(time)) / 100.0;
+                let c_boost = properties.get("contrast_boost").map_or(10.0, |p| p.get_value_at(time)) / 100.0;
+                let pseudo_noise = ((time * 123.45 + col.r * 67.89 + col.g * 43.21).sin() * 43758.5453).fract() - 0.5;
+                let factor = (1.0 + c_boost).max(0.0);
+                col.r = ((col.r - 0.5) * factor + 0.5 + pseudo_noise * grain * 0.3 - vig * 0.15).clamp(0.0, 1.0);
+                col.g = ((col.g - 0.5) * factor + 0.5 + pseudo_noise * grain * 0.3 - vig * 0.15).clamp(0.0, 1.0);
+                col.b = ((col.b - 0.5) * factor + 0.5 + pseudo_noise * grain * 0.3 - vig * 0.15).clamp(0.0, 1.0);
+                return col;
+            }
+            _ => {}
+        }
+    }
+
+    if plugin.formula_lines.is_empty() {
+        return col;
+    }
+
+    // Evaluate formula lines with environment variables
+    let mut vars: HashMap<String, f32> = HashMap::new();
+    vars.insert("r".to_string(), col.r);
+    vars.insert("g".to_string(), col.g);
+    vars.insert("b".to_string(), col.b);
+    vars.insert("a".to_string(), col.a);
+    vars.insert("time".to_string(), time);
+
+    for slider in &plugin.sliders {
+        let val = properties
+            .get(&slider.name)
+            .map_or(slider.default_value, |p| p.get_value_at(time));
+        vars.insert(slider.name.clone(), val);
+    }
+
+    for raw_stmt in &plugin.formula_lines {
+        let stmt = raw_stmt.trim().trim_end_matches(';');
+        if stmt.is_empty() {
+            continue;
+        }
+
+        if let Some((target_var, expr)) = stmt.split_once('=') {
+            let target = target_var.trim().trim_start_matches("let ").trim();
+            let val = evaluate_expression(expr.trim(), &vars);
+            vars.insert(target.to_string(), val);
+        }
+    }
+
+    if let Some(&r) = vars.get("r") {
+        col.r = r.clamp(0.0, 1.0);
+    }
+    if let Some(&g) = vars.get("g") {
+        col.g = g.clamp(0.0, 1.0);
+    }
+    if let Some(&b) = vars.get("b") {
+        col.b = b.clamp(0.0, 1.0);
+    }
+    if let Some(&a) = vars.get("a") {
+        col.a = a.clamp(0.0, 1.0);
+    }
+
+    col
+}
+
+/// Evaluates a math expression with variables and standard math functions
+pub fn evaluate_expression(expr: &str, vars: &HashMap<String, f32>) -> f32 {
+    let expr = expr.trim();
+    if expr.is_empty() {
+        return 0.0;
+    }
+
+    // Function calls
+    if let Some((fn_name, args_str)) = parse_function_call(expr) {
+        let args = split_args(args_str);
+        let eval_args: Vec<f32> = args.iter().map(|a| evaluate_expression(a, vars)).collect();
+        return match fn_name.to_lowercase().as_str() {
+            "sin" => eval_args.first().copied().unwrap_or(0.0).sin(),
+            "cos" => eval_args.first().copied().unwrap_or(0.0).cos(),
+            "tan" => eval_args.first().copied().unwrap_or(0.0).tan(),
+            "abs" => eval_args.first().copied().unwrap_or(0.0).abs(),
+            "sqrt" => eval_args.first().copied().unwrap_or(0.0).max(0.0).sqrt(),
+            "fract" => eval_args.first().copied().unwrap_or(0.0).fract(),
+            "floor" => eval_args.first().copied().unwrap_or(0.0).floor(),
+            "ceil" => eval_args.first().copied().unwrap_or(0.0).ceil(),
+            "round" => eval_args.first().copied().unwrap_or(0.0).round(),
+            "min" => {
+                let a = eval_args.first().copied().unwrap_or(0.0);
+                let b = eval_args.get(1).copied().unwrap_or(0.0);
+                a.min(b)
+            }
+            "max" => {
+                let a = eval_args.first().copied().unwrap_or(0.0);
+                let b = eval_args.get(1).copied().unwrap_or(0.0);
+                a.max(b)
+            }
+            "clamp" => {
+                let val = eval_args.first().copied().unwrap_or(0.0);
+                let min = eval_args.get(1).copied().unwrap_or(0.0);
+                let max = eval_args.get(2).copied().unwrap_or(1.0);
+                val.clamp(min, max)
+            }
+            "mix" | "lerp" => {
+                let a = eval_args.first().copied().unwrap_or(0.0);
+                let b = eval_args.get(1).copied().unwrap_or(0.0);
+                let t = eval_args.get(2).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                a * (1.0 - t) + b * t
+            }
+            "pow" => {
+                let a = eval_args.first().copied().unwrap_or(0.0);
+                let b = eval_args.get(1).copied().unwrap_or(1.0);
+                a.powf(b)
+            }
+            "step" => {
+                let edge = eval_args.first().copied().unwrap_or(0.0);
+                let x = eval_args.get(1).copied().unwrap_or(0.0);
+                if x < edge { 0.0 } else { 1.0 }
+            }
+            _ => 0.0,
+        };
+    }
+
+    // Binary operations with precedence (+, -, *, /, %)
+    // Look for top-level + or - (outside parens)
+    if let Some((left, op, right)) = find_top_level_binop(expr, &['+', '-']) {
+        let l_val = evaluate_expression(left, vars);
+        let r_val = evaluate_expression(right, vars);
+        return if op == '+' { l_val + r_val } else { l_val - r_val };
+    }
+
+    // Look for top-level * or / or %
+    if let Some((left, op, right)) = find_top_level_binop(expr, &['*', '/', '%']) {
+        let l_val = evaluate_expression(left, vars);
+        let r_val = evaluate_expression(right, vars);
+        return match op {
+            '*' => l_val * r_val,
+            '/' => if r_val.abs() > 0.00001 { l_val / r_val } else { 0.0 },
+            '%' => if r_val.abs() > 0.00001 { l_val % r_val } else { 0.0 },
+            _ => 0.0,
+        };
+    }
+
+    // Strip outer parens
+    if expr.starts_with('(') && expr.ends_with(')') {
+        if let Some(inner) = strip_matched_parens(expr) {
+            return evaluate_expression(inner, vars);
+        }
+    }
+
+    // Unary minus
+    if expr.starts_with('-') {
+        return -evaluate_expression(&expr[1..], vars);
+    }
+
+    // Literal number
+    if let Ok(num) = expr.parse::<f32>() {
+        return num;
+    }
+
+    // Variable lookup
+    if let Some(&val) = vars.get(expr) {
+        return val;
+    }
+
+    0.0
+}
+
+fn parse_function_call(expr: &str) -> Option<(&str, &str)> {
+    if let Some(open) = expr.find('(') {
+        if expr.ends_with(')') {
+            let fn_name = expr[..open].trim();
+            if !fn_name.is_empty() && fn_name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                let args_str = &expr[open + 1..expr.len() - 1];
+                return Some((fn_name, args_str));
+            }
+        }
+    }
+    None
+}
+
+fn split_args(args_str: &str) -> Vec<&str> {
+    let mut args = Vec::new();
+    let mut depth = 0;
+    let mut start = 0;
+    for (i, c) in args_str.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                args.push(args_str[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < args_str.len() {
+        args.push(args_str[start..].trim());
+    }
+    args
+}
+
+fn find_top_level_binop<'a>(expr: &'a str, ops: &[char]) -> Option<(&'a str, char, &'a str)> {
+    let mut depth = 0;
+    let chars: Vec<(usize, char)> = expr.char_indices().collect();
+    // Scan from right to left for left-associativity
+    for &(i, c) in chars.iter().rev() {
+        match c {
+            ')' => depth += 1,
+            '(' => depth -= 1,
+            op if depth == 0 && ops.contains(&op) => {
+                // Ignore unary minus at the very start
+                if op == '-' && i == 0 {
+                    continue;
+                }
+                // Ignore operator preceded by another operator
+                if i > 0 {
+                    let prev_char = expr[..i].trim_end().chars().last();
+                    if let Some(pc) = prev_char {
+                        if pc == '+' || pc == '-' || pc == '*' || pc == '/' || pc == '%' || pc == '(' {
+                            continue;
+                        }
+                    }
+                }
+                let left = expr[..i].trim();
+                let right = expr[i + 1..].trim();
+                return Some((left, op, right));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn strip_matched_parens(expr: &str) -> Option<&str> {
+    let mut depth = 0;
+    for (i, c) in expr.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 && i < expr.len() - 1 {
+                    return None; // Paren closed before the end of the string
+                }
+            }
+            _ => {}
+        }
+    }
+    if depth == 0 && expr.len() >= 2 {
+        Some(&expr[1..expr.len() - 1])
+    } else {
+        None
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Functional Plugin Execution
+// ------------------------------------------------------------------------------------------------
+
+pub fn execute_functional_plugin(
+    comp: &mut Composition,
+    plugin: &FunctionalPlugin,
+    slider_overrides: Option<&HashMap<String, f32>>,
+) -> Result<String, String> {
+    let get_val = |name: &str, def: f32| -> f32 {
+        if let Some(map) = slider_overrides {
+            if let Some(&v) = map.get(name) {
+                return v;
+            }
+        }
+        plugin
+            .sliders
+            .iter()
+            .find(|s| s.name == name)
+            .map(|s| s.default_value)
+            .unwrap_or(def)
+    };
+
+    let action = plugin.action.to_lowercase();
+    match action.as_str() {
+        "add_camera_rig" | "camera_rig" => {
+            let dist = get_val("distance", 1800.0);
+            let speed = get_val("orbit_speed", 1.0);
+
+            // 1. Create Null controller
+            let null_idx = comp.layers.len();
+            let mut null_layer = default_layer("Camera Orbit Null".to_string(), LayerSource::Null, null_idx);
+            null_layer.d3 = true;
+            null_layer.properties.get_mut("x").unwrap().base_value = comp.settings.width as f32 / 2.0;
+            null_layer.properties.get_mut("y").unwrap().base_value = comp.settings.height as f32 / 2.0;
+            null_layer.properties.get_mut("z").unwrap().base_value = 0.0;
+
+            // Add smooth orbit rotation keyframes
+            let rot_prop = null_layer.properties.get_mut("rotationY").unwrap();
+            rot_prop.keyframes.push(Keyframe {
+                time: 0.0,
+                value: -30.0,
+                ease: Some(BezierControl::easy_ease()),
+            });
+            rot_prop.keyframes.push(Keyframe {
+                time: (10.0 / speed).max(1.0),
+                value: 30.0,
+                ease: Some(BezierControl::easy_ease()),
+            });
+            comp.layers.push(null_layer);
+
+            // 2. Create 3D Camera layer
+            let cam_idx = comp.layers.len();
+            let mut cam_layer = default_layer("3D Camera 1".to_string(), LayerSource::Camera, cam_idx);
+            cam_layer.d3 = true;
+            cam_layer.parent_index = Some(null_idx);
+            cam_layer.properties.get_mut("z").unwrap().base_value = -dist;
+            cam_layer.properties.get_mut("zoom").unwrap().base_value = dist * 0.8;
+            cam_layer.properties.get_mut("poiX").unwrap().base_value = comp.settings.width as f32 / 2.0;
+            cam_layer.properties.get_mut("poiY").unwrap().base_value = comp.settings.height as f32 / 2.0;
+            cam_layer.properties.get_mut("poiZ").unwrap().base_value = 0.0;
+            comp.layers.push(cam_layer);
+
+            comp.active_layer_index = Some(null_idx);
+            Ok("Created 3D Camera Rig with Orbit Null controller and keyframes.".to_string())
+        }
+        "stagger_layers" | "stagger" => {
+            let offset = get_val("offset_seconds", 0.25).max(0.01);
+            let reverse = get_val("reverse_order", 0.0) > 0.5;
+
+            let count = comp.layers.len();
+            for i in 0..count {
+                let idx = if reverse { count - 1 - i } else { i };
+                if let Some(l) = comp.layers.get_mut(idx) {
+                    if !l.locked {
+                        let duration = (l.out_time - l.in_time).max(0.1);
+                        l.in_time = i as f32 * offset;
+                        l.out_time = l.in_time + duration;
+                    }
+                }
+            }
+            Ok(format!("Staggered {} layers by {:.2}s offset.", count, offset))
+        }
+        "easy_ease_all" | "easy_ease" => {
+            let mut count = 0;
+            if let Some(act_idx) = comp.active_layer_index {
+                if let Some(l) = comp.layers.get_mut(act_idx) {
+                    for prop in l.properties.values_mut() {
+                        for kf in &mut prop.keyframes {
+                            kf.ease = Some(BezierControl::easy_ease());
+                            count += 1;
+                        }
+                    }
+                }
+            } else {
+                for l in &mut comp.layers {
+                    for prop in l.properties.values_mut() {
+                        for kf in &mut prop.keyframes {
+                            kf.ease = Some(BezierControl::easy_ease());
+                            count += 1;
+                        }
+                    }
+                }
+            }
+            Ok(format!("Applied Easy Ease (Bezier) to {} keyframes.", count))
+        }
+        "add_adjustment_layer" => {
+            let idx = comp.layers.len();
+            let mut adj = default_layer("Adjustment Layer FX".to_string(), LayerSource::Adjustment, idx);
+            adj.fx = true;
+            adj.effects.push(LayerEffect::new("Brightness & Contrast".to_string(), EffectType::BrightnessContrast));
+            adj.effects.push(LayerEffect::new("Glow".to_string(), EffectType::Glow));
+            adj.effects.push(LayerEffect::new("Vignette".to_string(), EffectType::Vignette));
+            comp.layers.push(adj);
+            comp.active_layer_index = Some(idx);
+            Ok("Added Master Adjustment Layer with FX stack.".to_string())
+        }
+        "create_palette_solids" => {
+            let colors: [[f32; 4]; 5] = [
+                [0.12, 0.14, 0.20, 1.0], // Deep Navy
+                [0.92, 0.35, 0.30, 1.0], // Coral Red
+                [0.98, 0.75, 0.25, 1.0], // Gold Sun
+                [0.25, 0.70, 0.65, 1.0], // Teal Aqua
+                [0.95, 0.95, 0.96, 1.0], // Soft White
+            ];
+            let names = ["Palette Solid Navy", "Palette Solid Coral", "Palette Solid Gold", "Palette Solid Teal", "Palette Solid White"];
+            let w = comp.settings.width as f32 / 5.0;
+            let h = comp.settings.height as f32;
+
+            for (i, (&col, name)) in colors.iter().zip(names.iter()).enumerate() {
+                let idx = comp.layers.len();
+                let mut layer = default_layer(name.to_string(), LayerSource::Solid { color: col }, idx);
+                layer.properties.get_mut("x").unwrap().base_value = (i as f32 + 0.5) * w;
+                layer.properties.get_mut("y").unwrap().base_value = h / 2.0;
+                layer.properties.get_mut("scaleX").unwrap().base_value = (w / 200.0) * 100.0;
+                layer.properties.get_mut("scaleY").unwrap().base_value = (h / 200.0) * 100.0;
+                comp.layers.push(layer);
+            }
+            Ok("Generated 5-color palette solids across composition.".to_string())
+        }
+        _ => {
+            // Run script commands if any
+            if !plugin.script_commands.is_empty() {
+                execute_script_commands(comp, &plugin.script_commands)?;
+                Ok(format!("Executed script plugin '{}' successfully.", plugin.name))
+            } else {
+                Err(format!("Unknown functional action: {}", plugin.action))
+            }
+        }
+    }
+}
+
+fn execute_script_commands(comp: &mut Composition, commands: &[String]) -> Result<(), String> {
+    for cmd_line in commands {
+        let parts: Vec<&str> = cmd_line.split_whitespace().collect();
+        if parts.is_empty() {
+            continue;
+        }
+        match parts[0].to_lowercase().as_str() {
+            "add_layer" => {
+                let layer_type = parts.get(1).map(|s| s.to_lowercase()).unwrap_or_default();
+                let idx = comp.layers.len();
+                let name = parts.get(2).map(|s| s.trim_matches('"')).unwrap_or("New Layer");
+                match layer_type.as_str() {
+                    "solid" => {
+                        let layer = default_layer(name.to_string(), LayerSource::Solid { color: [0.2, 0.4, 0.8, 1.0] }, idx);
+                        comp.layers.push(layer);
+                    }
+                    "text" => {
+                        let text_val = parts.get(3).map(|s| s.trim_matches('"')).unwrap_or("Sample Text");
+                        let layer = default_layer(name.to_string(), LayerSource::Text {
+                            text: text_val.to_string(),
+                            font_size: 64.0,
+                            color: [1.0, 1.0, 1.0, 1.0],
+                        }, idx);
+                        comp.layers.push(layer);
+                    }
+                    "adjustment" => {
+                        let layer = default_layer(name.to_string(), LayerSource::Adjustment, idx);
+                        comp.layers.push(layer);
+                    }
+                    "camera" => {
+                        let mut layer = default_layer(name.to_string(), LayerSource::Camera, idx);
+                        layer.d3 = true;
+                        comp.layers.push(layer);
+                    }
+                    "null" => {
+                        let layer = default_layer(name.to_string(), LayerSource::Null, idx);
+                        comp.layers.push(layer);
+                    }
+                    _ => {}
+                }
+            }
+            "add_effect" => {
+                let eff_name = parts.get(1).map(|s| s.trim_matches('"')).unwrap_or("Fast Blur");
+                if let Some(act_idx) = comp.active_layer_index {
+                    if let Some(l) = comp.layers.get_mut(act_idx) {
+                        l.fx = true;
+                        let et = match eff_name.to_lowercase().as_str() {
+                            "fast blur" | "blur" => EffectType::FastBlur,
+                            "brightness & contrast" | "brightness" => EffectType::BrightnessContrast,
+                            "glow" => EffectType::Glow,
+                            "vignette" => EffectType::Vignette,
+                            "tint" => EffectType::Tint,
+                            "invert" => EffectType::Invert,
+                            "fill" => EffectType::Fill,
+                            _ => EffectType::Plugin(eff_name.to_string()),
+                        };
+                        l.effects.push(LayerEffect::new(eff_name.to_string(), et));
+                    }
+                }
+            }
+            "set_property" => {
+                let prop_name = parts.get(1).map(|s| s.trim_matches('"')).unwrap_or("");
+                let val: f32 = parts.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                if let Some(act_idx) = comp.active_layer_index {
+                    if let Some(l) = comp.layers.get_mut(act_idx) {
+                        if let Some(p) = l.properties.get_mut(prop_name) {
+                            p.base_value = val;
+                        }
+                    }
+                }
+            }
+            "stagger" => {
+                let offset: f32 = parts.get(1).and_then(|v| v.parse().ok()).unwrap_or(0.25);
+                for (i, l) in comp.layers.iter_mut().enumerate() {
+                    let dur = (l.out_time - l.in_time).max(0.1);
+                    l.in_time = i as f32 * offset;
+                    l.out_time = l.in_time + dur;
+                }
+            }
+            "ease_keyframes" => {
+                for l in &mut comp.layers {
+                    for p in l.properties.values_mut() {
+                        for kf in &mut p.keyframes {
+                            kf.ease = Some(BezierControl::easy_ease());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_effect_plugin() {
+        let content = r#".spec effect
+name: Custom Glow Booster
+category: Stylize
+description: Boosts brightness and glow
+slider: intensity, 50.0, 0.0, 100.0, 1.0
+slider: boost, 2.0, 1.0, 10.0, 0.1
+
+// Math formula
+r = r * boost;
+g = g * boost;
+b = b * boost;
+"#;
+        let plugin = parse_plugin_content(content, "test.bfxplugin").unwrap();
+        assert!(plugin.is_some());
+        if let Some(Plugin::Effect(eff)) = plugin {
+            assert_eq!(eff.name, "Custom Glow Booster");
+            assert_eq!(eff.category, "Stylize");
+            assert_eq!(eff.sliders.len(), 2);
+            assert_eq!(eff.sliders[0].name, "intensity");
+            assert_eq!(eff.sliders[0].default_value, 50.0);
+            assert_eq!(eff.formula_lines.len(), 3);
+        } else {
+            panic!("Expected Effect plugin");
+        }
+    }
+
+    #[test]
+    fn test_parse_functional_plugin() {
+        let content = r#".spec functional
+name: Setup Camera Rig
+category: 3D Tools
+description: Creates a 3D orbit camera
+action: add_camera_rig
+slider: distance, 2000.0, 500.0, 5000.0, 100.0
+"#;
+        let plugin = parse_plugin_content(content, "camera.bfxplugin").unwrap();
+        assert!(plugin.is_some());
+        if let Some(Plugin::Functional(func)) = plugin {
+            assert_eq!(func.name, "Setup Camera Rig");
+            assert_eq!(func.action, "add_camera_rig");
+            assert_eq!(func.sliders.len(), 1);
+            assert_eq!(func.sliders[0].name, "distance");
+        } else {
+            panic!("Expected Functional plugin");
+        }
+    }
+
+    #[test]
+    fn test_apply_effect_plugin_formula() {
+        let eff = EffectPlugin {
+            id: "invert_red".to_string(),
+            name: "Invert Red".to_string(),
+            category: "Color".to_string(),
+            description: "Inverts red channel".to_string(),
+            file_path: "invert_red.bfxplugin".to_string(),
+            sliders: vec![PluginSlider {
+                name: "mix_amt".to_string(),
+                display_name: "Mix".to_string(),
+                default_value: 1.0,
+                min_value: 0.0,
+                max_value: 1.0,
+                step: 0.1,
+            }],
+            formula_lines: vec![
+                "r = mix(r, 1.0 - r, mix_amt);".to_string(),
+            ],
+            builtin_type: None,
+            glsl_shader: None,
+        };
+
+        let mut props = HashMap::new();
+        props.insert("mix_amt".to_string(), Property {
+            name: "mix_amt".to_string(),
+            base_value: 1.0,
+            keyframes: vec![],
+            wiggle: None,
+        });
+
+        let orig = Color::new(0.8, 0.2, 0.4, 1.0);
+        let res = apply_effect_plugin(orig, &eff, &props, 0.0);
+        assert!((res.r - 0.2).abs() < 0.001);
+        assert_eq!(res.g, 0.2);
+        assert_eq!(res.b, 0.4);
+    }
+
+    #[test]
+    fn test_execute_camera_rig_functional_plugin() {
+        let mut comp = Composition::default();
+        let func = FunctionalPlugin {
+            id: "camera_rig".to_string(),
+            name: "Camera Rig".to_string(),
+            category: "3D".to_string(),
+            description: "Add rig".to_string(),
+            file_path: "camera_rig.bfxplugin".to_string(),
+            action: "add_camera_rig".to_string(),
+            script_commands: vec![],
+            sliders: vec![],
+        };
+
+        let res = execute_functional_plugin(&mut comp, &func, None);
+        assert!(res.is_ok());
+        assert_eq!(comp.layers.len(), 2);
+        assert!(comp.layers[0].d3);
+        assert!(comp.layers[1].d3);
+        assert_eq!(comp.layers[1].parent_index, Some(0));
+    }
+
+    #[test]
+    fn test_execute_stagger_functional_plugin() {
+        let mut comp = Composition::default();
+        comp.layers.push(default_layer("Layer 1".to_string(), LayerSource::Adjustment, 0));
+        comp.layers.push(default_layer("Layer 2".to_string(), LayerSource::Adjustment, 1));
+        comp.layers.push(default_layer("Layer 3".to_string(), LayerSource::Adjustment, 2));
+
+        let func = FunctionalPlugin {
+            id: "stagger".to_string(),
+            name: "Stagger".to_string(),
+            category: "Animation".to_string(),
+            description: "Stagger layers".to_string(),
+            file_path: "stagger.bfxplugin".to_string(),
+            action: "stagger_layers".to_string(),
+            script_commands: vec![],
+            sliders: vec![PluginSlider {
+                name: "offset_seconds".to_string(),
+                display_name: "Offset".to_string(),
+                default_value: 0.5,
+                min_value: 0.0,
+                max_value: 5.0,
+                step: 0.1,
+            }],
+        };
+
+        let res = execute_functional_plugin(&mut comp, &func, None);
+        assert!(res.is_ok());
+        assert_eq!(comp.layers[0].in_time, 0.0);
+        assert_eq!(comp.layers[1].in_time, 0.5);
+        assert_eq!(comp.layers[2].in_time, 1.0);
+    }
+
+    #[test]
+    fn test_math_evaluator_expressions() {
+        let mut vars = HashMap::new();
+        vars.insert("x".to_string(), 10.0);
+        vars.insert("y".to_string(), 5.0);
+
+        assert_eq!(evaluate_expression("x + y", &vars), 15.0);
+        assert_eq!(evaluate_expression("x - y", &vars), 5.0);
+        assert_eq!(evaluate_expression("x * y", &vars), 50.0);
+        assert_eq!(evaluate_expression("x / y", &vars), 2.0);
+        assert_eq!(evaluate_expression("x % y", &vars), 0.0);
+        assert_eq!(evaluate_expression("(x + y) * 2", &vars), 30.0);
+        assert_eq!(evaluate_expression("min(x, y)", &vars), 5.0);
+        assert_eq!(evaluate_expression("max(x, y)", &vars), 10.0);
+        assert_eq!(evaluate_expression("clamp(15.0, 0.0, 10.0)", &vars), 10.0);
+        assert_eq!(evaluate_expression("mix(0.0, 100.0, 0.5)", &vars), 50.0);
+        assert_eq!(evaluate_expression("pow(2.0, 3.0)", &vars), 8.0);
+        assert_eq!(evaluate_expression("abs(-42.0)", &vars), 42.0);
+    }
+
+    #[test]
+    fn test_plugin_registry_default_creation() {
+        let temp_dir = std::env::temp_dir().join(format!("bfx_plug_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let mut reg = PluginRegistry {
+            effects: Vec::new(),
+            functionals: Vec::new(),
+            load_errors: Vec::new(),
+            plugins_dir: temp_dir.clone(),
+        };
+        reg.ensure_default_plugins();
+        reg.reload();
+
+        assert!(!reg.effects.is_empty(), "Should load default effect plugins");
+        assert!(!reg.functionals.is_empty(), "Should load default functional plugins");
+        assert!(reg.get_effect("Sepia Tone").is_some());
+        assert!(reg.get_functional("Create 3D Camera Rig").is_some());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+}

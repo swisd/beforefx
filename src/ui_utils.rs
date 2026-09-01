@@ -76,20 +76,58 @@ pub fn format_timecode(time: f32, fps: u32) -> String {
     format!("{:02}:{:02}:{:02}:{:02}", hours, minutes, seconds, frames)
 }
 
-pub fn property_display_name(prop_name: &str) -> &'static str {
+pub fn property_display_name(prop_name: &str) -> String {
     match prop_name {
-        "anchorX" => "Anchor Point X",
-        "anchorY" => "Anchor Point Y",
-        "x" => "Position X",
-        "y" => "Position Y",
-        "z" => "Position Z",
-        "scaleX" => "Scale X",
-        "scaleY" => "Scale Y",
-        "rotation" => "Rotation (Z)",
-        "rotationX" => "Rotation X",
-        "rotationY" => "Rotation Y",
-        "opacity" => "Opacity",
-        _ => "Property",
+        "anchorX" => "Anchor Point X".to_string(),
+        "anchorY" => "Anchor Point Y".to_string(),
+        "anchorZ" => "Anchor Point Z".to_string(),
+        "x" => "Position X".to_string(),
+        "y" => "Position Y".to_string(),
+        "z" => "Position Z".to_string(),
+        "scaleX" => "Scale X".to_string(),
+        "scaleY" => "Scale Y".to_string(),
+        "scaleZ" => "Scale Z".to_string(),
+        "rotation" => "Rotation (Z)".to_string(),
+        "rotationX" => "Rotation X".to_string(),
+        "rotationY" => "Rotation Y".to_string(),
+        "opacity" => "Opacity".to_string(),
+        "poiX" => "Point of Interest X".to_string(),
+        "poiY" => "Point of Interest Y".to_string(),
+        "poiZ" => "Point of Interest Z".to_string(),
+        "zoom" => "Zoom".to_string(),
+        "fov" => "Field of View".to_string(),
+        "audioVolume" => "Audio Level (%)".to_string(),
+        "audioPan" => "Audio Pan".to_string(),
+        "colorR" => "Color R".to_string(),
+        "colorG" => "Color G".to_string(),
+        "colorB" => "Color B".to_string(),
+        "blackR" => "Black R".to_string(),
+        "blackG" => "Black G".to_string(),
+        "blackB" => "Black B".to_string(),
+        "whiteR" => "White R".to_string(),
+        "whiteG" => "White G".to_string(),
+        "whiteB" => "White B".to_string(),
+        "amount" => "Amount".to_string(),
+        "brightness" => "Brightness".to_string(),
+        "contrast" => "Contrast".to_string(),
+        "blurRadius" => "Blur Radius".to_string(),
+        "blurLength" => "Blur Length".to_string(),
+        "threshold" => "Threshold".to_string(),
+        "radius" => "Radius".to_string(),
+        "intensity" => "Intensity".to_string(),
+        "distance" => "Distance".to_string(),
+        "angle" => "Angle".to_string(),
+        "softness" => "Softness".to_string(),
+        "blend" => "Blend".to_string(),
+        "feather" => "Feather".to_string(),
+        "hue" => "Hue".to_string(),
+        "saturation" => "Saturation".to_string(),
+        "lightness" => "Lightness".to_string(),
+        "waveHeight" => "Wave Height".to_string(),
+        "waveWidth" => "Wave Width".to_string(),
+        "speed" => "Speed".to_string(),
+        "direction" => "Direction".to_string(),
+        other => crate::plugin::format_display_name(other),
     }
 }
 
@@ -98,15 +136,24 @@ pub fn sorted_property_names(layer: &Layer) -> Vec<String> {
     let order = [
         "anchorX",
         "anchorY",
+        "anchorZ",
         "x",
         "y",
         "z",
         "scaleX",
         "scaleY",
+        "scaleZ",
         "rotation",
         "rotationX",
         "rotationY",
         "opacity",
+        "poiX",
+        "poiY",
+        "poiZ",
+        "zoom",
+        "fov",
+        "audioVolume",
+        "audioPan",
     ];
     names.sort_by(|a, b| {
         let pos_a = order.iter().position(|&x| x == a).unwrap_or(99);
@@ -163,8 +210,57 @@ pub struct VisibleTimelineRow {
 
 pub const LAYER_ROW_HEIGHT: f32 = 24.0;
 pub const PROPERTY_ROW_HEIGHT: f32 = 22.0;
-pub const CURVE_ROW_HEIGHT: f32 = 60.0;
+pub const CURVE_ROW_HEIGHT: f32 = 90.0;
 pub const TIMELINE_HEADER_HEIGHT: f32 = 26.0;
+
+pub fn snap_time(comp: &Composition, target: f32, snap_range_time: f32) -> f32 {
+    if !comp.snapping {
+        return target;
+    }
+    let mut closest = target;
+    let mut min_diff = snap_range_time;
+    let candidates = [0.0, comp.settings.duration, comp.work_area_in, comp.work_area_out];
+    for &cand in &candidates {
+        let diff = (cand - target).abs();
+        if diff < min_diff {
+            min_diff = diff;
+            closest = cand;
+        }
+    }
+    for m in &comp.markers {
+        let diff = (m.time - target).abs();
+        if diff < min_diff {
+            min_diff = diff;
+            closest = m.time;
+        }
+    }
+    for l in &comp.layers {
+        for &t in &[l.in_time, l.out_time] {
+            let diff = (t - target).abs();
+            if diff < min_diff {
+                min_diff = diff;
+                closest = t;
+            }
+        }
+        for m in &l.markers {
+            let diff = (m.time - target).abs();
+            if diff < min_diff {
+                min_diff = diff;
+                closest = m.time;
+            }
+        }
+        for (_, p) in &l.properties {
+            for kf in &p.keyframes {
+                let diff = (kf.time - target).abs();
+                if diff < min_diff {
+                    min_diff = diff;
+                    closest = kf.time;
+                }
+            }
+        }
+    }
+    closest
+}
 
 pub fn calculate_visible_rows(comp: &Composition) -> (Vec<VisibleTimelineRow>, f32) {
     let mut rows = Vec::new();
@@ -195,19 +291,24 @@ pub fn calculate_visible_rows(comp: &Composition) -> (Vec<VisibleTimelineRow>, f
 
         if !layer.collapsed {
             for prop_name in sorted_property_names(layer) {
-                let p_h = if comp.show_curves {
-                    CURVE_ROW_HEIGHT
-                } else {
-                    PROPERTY_ROW_HEIGHT
-                };
-                rows.push(VisibleTimelineRow {
-                    is_layer: false,
-                    layer_index,
-                    property_name: Some(prop_name),
-                    row_height: p_h,
-                    y_top: current_y,
-                });
-                current_y += p_h;
+                if let Some(prop) = layer.properties.get(&prop_name) {
+                    if comp.solo_animated_properties && prop.keyframes.is_empty() {
+                        continue;
+                    }
+                    let p_h = if comp.show_curves {
+                        CURVE_ROW_HEIGHT
+                    } else {
+                        PROPERTY_ROW_HEIGHT
+                    };
+                    rows.push(VisibleTimelineRow {
+                        is_layer: false,
+                        layer_index,
+                        property_name: Some(prop_name),
+                        row_height: p_h,
+                        y_top: current_y,
+                    });
+                    current_y += p_h;
+                }
             }
         }
     }
@@ -261,11 +362,11 @@ fn draw_keyframe_editor(
                         ease.cp1 = 0.33;
                         ease.cp2 = 0.67;
                     }
-                    if ui.button("Ease In").clicked() {
+                    if ui.button("Ease In (Shift+F9)").clicked() {
                         ease.cp1 = 0.15;
                         ease.cp2 = 1.0;
                     }
-                    if ui.button("Ease Out").clicked() {
+                    if ui.button("Ease Out (Ctrl+Shift+F9)").clicked() {
                         ease.cp1 = 0.85;
                         ease.cp2 = 0.35;
                     }
@@ -273,6 +374,10 @@ fn draw_keyframe_editor(
                     ui.add(egui::Slider::new(&mut ease.cp1, 0.0..=1.0).show_value(false));
                     ui.label("Out:");
                     ui.add(egui::Slider::new(&mut ease.cp2, 0.0..=1.0).show_value(false));
+                }
+
+                if ui.button("Linear").on_hover_text("Reset to Linear Keyframe").clicked() {
+                    keyframe.ease = None;
                 }
 
                 if ui
@@ -414,6 +519,71 @@ pub fn draw_pro_ae_timeline(
 
         ui.separator();
 
+        // Snapping Toggle
+        if ui
+            .selectable_label(
+                comp.snapping,
+                egui::RichText::new("🧲 Snap").size(11.0),
+            )
+            .on_hover_text("Toggle Timeline Snapping to Keyframes, Markers & Boundaries")
+            .clicked()
+        {
+            comp.snapping = !comp.snapping;
+        }
+
+        // Solo Animated Properties Toggle (U)
+        if ui
+            .selectable_label(
+                comp.solo_animated_properties,
+                egui::RichText::new("⚡ Solo Anim (U)").size(11.0),
+            )
+            .on_hover_text("Show only animated properties with keyframes (U)")
+            .clicked()
+        {
+            comp.solo_animated_properties = !comp.solo_animated_properties;
+        }
+
+        // Auto Frame Cache Toggle
+        if ui
+            .selectable_label(
+                comp.auto_frame_cache,
+                egui::RichText::new("⚡ Auto Cache").size(11.0),
+            )
+            .on_hover_text("Automatically cache frames in the background from beginning to the final keyframe")
+            .clicked()
+        {
+            comp.auto_frame_cache = !comp.auto_frame_cache;
+        }
+
+        // Pause at Last Keyframe Toggle
+        if ui
+            .selectable_label(
+                comp.pause_at_last_keyframe,
+                egui::RichText::new("⏸ Pause @ Last KF").size(11.0),
+            )
+            .on_hover_text("Automatically pause playback when reaching the final keyframe instead of looping")
+            .clicked()
+        {
+            comp.pause_at_last_keyframe = !comp.pause_at_last_keyframe;
+        }
+
+        // Add Marker Button
+        if ui
+            .button(egui::RichText::new("📍 +Marker (*)").size(11.0))
+            .on_hover_text("Add Composition Marker at current playhead time (*)")
+            .clicked()
+        {
+            let num = comp.markers.len() + 1;
+            comp.markers.push(Marker {
+                time: comp.current_time,
+                label: format!("M{}", num),
+                comment: format!("Marker {}", num),
+                color_index: (num - 1) % AE_LABEL_COLORS.len(),
+            });
+        }
+
+        ui.separator();
+
         // Timeline Zoom Controls
         ui.label(egui::RichText::new("Zoom:").size(11.0).color(egui::Color32::from_gray(140)));
         if ui.button("1s").clicked() {
@@ -443,6 +613,80 @@ pub fn draw_pro_ae_timeline(
             );
         });
     });
+
+    if comp.show_curves {
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("📊 Graph Editor:").size(11.0).color(egui::Color32::from_rgb(255, 215, 75)).strong());
+
+            let is_val = comp.graph_mode == GraphMode::ValueGraph;
+            if ui.selectable_label(is_val, egui::RichText::new("📈 Value Graph").size(11.0)).on_hover_text("Show absolute property values and trajectory over time").clicked() {
+                comp.graph_mode = GraphMode::ValueGraph;
+            }
+            let is_spd = comp.graph_mode == GraphMode::SpeedGraph;
+            if ui.selectable_label(is_spd, egui::RichText::new("⚡ Speed Graph").size(11.0)).on_hover_text("Show rate of change / velocity in units per second").clicked() {
+                comp.graph_mode = GraphMode::SpeedGraph;
+            }
+
+            ui.separator();
+            ui.label(egui::RichText::new("Easing Presets:").size(11.0).color(egui::Color32::from_gray(140)));
+
+            if ui.button(egui::RichText::new("Easy Ease (F9)").size(10.5)).on_hover_text("Apply smooth symmetric cubic bezier easing (F9)").clicked() {
+                if let Some(sel) = selected.as_ref() {
+                    if let Some(prop) = comp.layers.get_mut(sel.layer_index).and_then(|l| l.properties.get_mut(&sel.property_name)) {
+                        if let Some(kf) = prop.keyframes.get_mut(sel.keyframe_index) {
+                            kf.ease = Some(BezierControl::easy_ease());
+                        }
+                    }
+                }
+            }
+            if ui.button(egui::RichText::new("Ease In (Shift+F9)").size(10.5)).on_hover_text("Apply smooth incoming deceleration (Shift+F9)").clicked() {
+                if let Some(sel) = selected.as_ref() {
+                    if let Some(prop) = comp.layers.get_mut(sel.layer_index).and_then(|l| l.properties.get_mut(&sel.property_name)) {
+                        if let Some(kf) = prop.keyframes.get_mut(sel.keyframe_index) {
+                            kf.ease = Some(BezierControl::ease_in());
+                        }
+                    }
+                }
+            }
+            if ui.button(egui::RichText::new("Ease Out (Ctrl+Shift+F9)").size(10.5)).on_hover_text("Apply smooth outgoing acceleration (Ctrl+Shift+F9)").clicked() {
+                if let Some(sel) = selected.as_ref() {
+                    if let Some(prop) = comp.layers.get_mut(sel.layer_index).and_then(|l| l.properties.get_mut(&sel.property_name)) {
+                        if let Some(kf) = prop.keyframes.get_mut(sel.keyframe_index) {
+                            kf.ease = Some(BezierControl::ease_out());
+                        }
+                    }
+                }
+            }
+            if ui.button(egui::RichText::new("Linear").size(10.5)).on_hover_text("Constant linear interpolation").clicked() {
+                if let Some(sel) = selected.as_ref() {
+                    if let Some(prop) = comp.layers.get_mut(sel.layer_index).and_then(|l| l.properties.get_mut(&sel.property_name)) {
+                        if let Some(kf) = prop.keyframes.get_mut(sel.keyframe_index) {
+                            kf.ease = Some(BezierControl::linear());
+                        }
+                    }
+                }
+            }
+            if ui.button(egui::RichText::new("Overshoot").size(10.5)).on_hover_text("Dynamic anticipation & overshoot bounce").clicked() {
+                if let Some(sel) = selected.as_ref() {
+                    if let Some(prop) = comp.layers.get_mut(sel.layer_index).and_then(|l| l.properties.get_mut(&sel.property_name)) {
+                        if let Some(kf) = prop.keyframes.get_mut(sel.keyframe_index) {
+                            kf.ease = Some(BezierControl::back_out());
+                        }
+                    }
+                }
+            }
+            if ui.button(egui::RichText::new("Bounce").size(10.5)).on_hover_text("Exponential elastic easing curve").clicked() {
+                if let Some(sel) = selected.as_ref() {
+                    if let Some(prop) = comp.layers.get_mut(sel.layer_index).and_then(|l| l.properties.get_mut(&sel.property_name)) {
+                        if let Some(kf) = prop.keyframes.get_mut(sel.keyframe_index) {
+                            kf.ease = Some(BezierControl::exponential());
+                        }
+                    }
+                }
+            }
+        });
+    }
 
     ui.add_space(2.0);
 
@@ -514,7 +758,7 @@ pub fn draw_pro_ae_timeline(
                             left_painter.text(
                                 egui::pos2(header_rect.right() - 125.0, header_rect.center().y),
                                 egui::Align2::LEFT_CENTER,
-                                "Switches (* fx ⬚ Ⓞ /)",
+                                "Switches (* fx 3D B /)",
                                 egui::FontId::proportional(11.0),
                                 egui::Color32::from_gray(140),
                             );
@@ -616,7 +860,7 @@ pub fn draw_pro_ae_timeline(
                                     }
 
                                     // Lock
-                                    let lock_icon = if layer.locked { "🔒" } else { "  " };
+                                    let lock_icon = if layer.locked { "L" } else { "  " };
                                     if row_ui
                                         .selectable_label(layer.locked, lock_icon)
                                         .on_hover_text("Lock Layer")
@@ -626,7 +870,7 @@ pub fn draw_pro_ae_timeline(
                                     }
 
                                     // Shy
-                                    let shy_icon = if layer.shy { "👤" } else { "  " };
+                                    let shy_icon = if layer.shy { "S" } else { "  " };
                                     if row_ui
                                         .selectable_label(layer.shy, shy_icon)
                                         .on_hover_text("Shy Layer (Hides when Shy is enabled globally)")
@@ -711,13 +955,13 @@ pub fn draw_pro_ae_timeline(
                                                 }
 
                                                 // Motion Blur
-                                                let moblur_text = if layer.moblur { "Ⓞ" } else { "  " };
+                                                let moblur_text = if layer.moblur { "B" } else { "  " };
                                                 if row_ui.selectable_label(layer.moblur, moblur_text).on_hover_text("Motion Blur").clicked() {
                                                     layer.moblur = !layer.moblur;
                                                 }
 
                                                 // 3D Layer
-                                                let d3_text = if layer.d3 { "⬚" } else { " " };
+                                                let d3_text = if layer.d3 { "3D" } else { " " };
                                                 if row_ui.selectable_label(layer.d3, d3_text).on_hover_text("3D Layer").clicked() {
                                                     layer.d3 = !layer.d3;
                                                 }
@@ -867,6 +1111,29 @@ pub fn draw_pro_ae_timeline(
                                         row_ui.with_layout(
                                             egui::Layout::right_to_left(egui::Align::Center),
                                             |row_ui| {
+                                                // Wiggle Expression toggle
+                                                let has_wiggle = prop.wiggle.as_ref().is_some_and(|w| w.enabled);
+                                                let wiggle_color = if has_wiggle {
+                                                    egui::Color32::from_rgb(250, 150, 50)
+                                                } else {
+                                                    egui::Color32::from_gray(90)
+                                                };
+                                                if row_ui
+                                                    .add(egui::Button::new(egui::RichText::new("~").size(10.0).color(wiggle_color)).frame(false))
+                                                    .on_hover_text("Toggle Wiggle (Organic Noise Expression)")
+                                                    .clicked()
+                                                {
+                                                    if let Some(w) = &mut prop.wiggle {
+                                                        w.enabled = !w.enabled;
+                                                    } else {
+                                                        prop.wiggle = Some(WiggleSettings {
+                                                            enabled: true,
+                                                            freq: 2.0,
+                                                            amp: 20.0,
+                                                        });
+                                                    }
+                                                }
+
                                                 let speed = if prop_name.contains("scale") || prop_name.contains("opacity") {
                                                     0.5
                                                 } else if prop_name.contains("rotation") {
@@ -975,6 +1242,44 @@ pub fn draw_pro_ae_timeline(
                                 egui::Color32::from_rgb(100, 180, 255),
                             );
 
+                            // RAM Preview Cached Frames Indicator Bar (Bright Green)
+                            if comp.ram_cache_enabled && !comp.cached_frames.is_empty() {
+                                let frame_w = pps / comp.settings.fps.max(1) as f32;
+                                let cache_y_top = ruler_rect.top() + 5.0;
+                                let cache_y_bottom = ruler_rect.top() + 7.5;
+
+                                let mut cached_vec: Vec<usize> = comp.cached_frames.iter().copied().collect();
+                                cached_vec.sort_unstable();
+
+                                if !cached_vec.is_empty() {
+                                    let mut span_start = cached_vec[0];
+                                    let mut span_end = cached_vec[0];
+
+                                    for &f in &cached_vec[1..] {
+                                        if f == span_end + 1 {
+                                            span_end = f;
+                                        } else {
+                                            let x_start = track_rect.left() + (span_start as f32 * frame_w);
+                                            let x_end = track_rect.left() + ((span_end + 1) as f32 * frame_w);
+                                            let cache_rect = egui::Rect::from_min_max(
+                                                egui::pos2(x_start, cache_y_top),
+                                                egui::pos2(x_end, cache_y_bottom),
+                                            );
+                                            painter.rect_filled(cache_rect, 0.5, egui::Color32::from_rgb(45, 215, 95));
+                                            span_start = f;
+                                            span_end = f;
+                                        }
+                                    }
+                                    let x_start = track_rect.left() + (span_start as f32 * frame_w);
+                                    let x_end = track_rect.left() + ((span_end + 1) as f32 * frame_w);
+                                    let cache_rect = egui::Rect::from_min_max(
+                                        egui::pos2(x_start, cache_y_top),
+                                        egui::pos2(x_end, cache_y_bottom),
+                                    );
+                                    painter.rect_filled(cache_rect, 0.5, egui::Color32::from_rgb(45, 215, 95));
+                                }
+                            }
+
                             // Ruler Time Markers
                             let total_seconds = timeline_duration.ceil() as i32;
                             for s in 0..=total_seconds {
@@ -1006,6 +1311,33 @@ pub fn draw_pro_ae_timeline(
                                     [egui::pos2(x, ruler_rect.bottom()), egui::pos2(x, track_rect.bottom())],
                                     egui::Stroke::new(0.5, egui::Color32::from_rgb(32, 32, 36)),
                                 );
+                            }
+
+                            // Render Composition Markers on Ruler
+                            for (_m_idx, marker) in comp.markers.iter().enumerate() {
+                                let mx = track_rect.left() + (marker.time * pps);
+                                let m_color = get_label_color(marker.color_index);
+                                let marker_pts = vec![
+                                    egui::pos2(mx - 4.5, ruler_rect.top() + 2.0),
+                                    egui::pos2(mx + 4.5, ruler_rect.top() + 2.0),
+                                    egui::pos2(mx + 4.5, ruler_rect.top() + 10.0),
+                                    egui::pos2(mx, ruler_rect.top() + 15.0),
+                                    egui::pos2(mx - 4.5, ruler_rect.top() + 10.0),
+                                ];
+                                painter.add(egui::Shape::convex_polygon(
+                                    marker_pts,
+                                    m_color,
+                                    egui::Stroke::new(1.0, egui::Color32::WHITE),
+                                ));
+                                if !marker.label.is_empty() {
+                                    painter.text(
+                                        egui::pos2(mx + 6.0, ruler_rect.top() + 3.0),
+                                        egui::Align2::LEFT_TOP,
+                                        &marker.label,
+                                        egui::FontId::proportional(9.0),
+                                        egui::Color32::from_rgb(230, 230, 240),
+                                    );
+                                }
                             }
 
                             // ------------------------------------------
@@ -1095,6 +1427,49 @@ pub fn draw_pro_ae_timeline(
                                             );
                                         }
 
+                                        // Audio Waveform Visualization
+                                        if let LayerSource::Audio { .. } = &layer.source {
+                                            let vol = layer.properties.get("audioVolume").map(|p| p.base_value).unwrap_or(100.0).clamp(0.0, 200.0) / 100.0;
+                                            let num_bars = ((bar_rect.width() / 3.5).floor() as usize).max(2);
+                                            let mid_y = bar_rect.center().y;
+                                            for b in 0..num_bars {
+                                                let bx = bar_rect.left() + b as f32 * 3.5 + 2.0;
+                                                let t = layer.in_time + (b as f32 / num_bars as f32) * (layer.out_time - layer.in_time);
+                                                let s1 = (t * 31.0).sin().abs();
+                                                let s2 = (t * 73.0 + 0.6).sin().abs();
+                                                let s3 = (t * 142.0 + 1.4).cos().abs();
+                                                let s4 = (t * 220.0 + 2.1).sin().abs();
+                                                let amp = (s1 * 0.35 + s2 * 0.35 + s3 * 0.2 + s4 * 0.1) * (bar_rect.height() * 0.42) * vol;
+                                                let bar_color = if b % 4 == 0 {
+                                                    egui::Color32::from_rgba_unmultiplied(80, 240, 220, 220)
+                                                } else {
+                                                    egui::Color32::from_rgba_unmultiplied(60, 200, 180, 160)
+                                                };
+                                                painter.line_segment(
+                                                    [egui::pos2(bx, mid_y - amp), egui::pos2(bx, mid_y + amp)],
+                                                    egui::Stroke::new(1.5, bar_color),
+                                                );
+                                            }
+                                            // Center baseline
+                                            painter.line_segment(
+                                                [egui::pos2(bar_rect.left(), mid_y), egui::pos2(bar_rect.right(), mid_y)],
+                                                egui::Stroke::new(0.5, egui::Color32::from_rgba_unmultiplied(40, 180, 160, 100)),
+                                            );
+                                        }
+
+                                        // Layer Markers
+                                        for lm in &layer.markers {
+                                            let lmx = track_rect.left() + (lm.time * pps);
+                                            if lmx >= bar_rect.left() && lmx <= bar_rect.right() {
+                                                let lm_col = get_label_color(lm.color_index);
+                                                painter.circle_filled(egui::pos2(lmx, bar_rect.top() + 3.0), 2.5, lm_col);
+                                                painter.line_segment(
+                                                    [egui::pos2(lmx, bar_rect.top()), egui::pos2(lmx, bar_rect.bottom())],
+                                                    egui::Stroke::new(1.0, lm_col),
+                                                );
+                                            }
+                                        }
+
                                         // Summary keyframe diamonds on collapsed layer bar
                                         if layer.collapsed {
                                             for (prop_name, prop) in &layer.properties {
@@ -1144,149 +1519,250 @@ pub fn draw_pro_ae_timeline(
                                                 // CURVE / GRAPH EDITOR TRACK
                                                 // ==========================================
                                                 let row_center_y = row_rect.center().y;
-                                                painter.line_segment(
-                                                    [egui::pos2(track_rect.left(), row_center_y), egui::pos2(track_rect.right(), row_center_y)],
-                                                    egui::Stroke::new(0.5, egui::Color32::from_gray(38)),
-                                                );
 
-                                                let mut min_val = prop.base_value;
-                                                let mut max_val = prop.base_value;
-                                                for kf in &prop.keyframes {
-                                                    min_val = min_val.min(kf.value);
-                                                    max_val = max_val.max(kf.value);
-                                                }
-                                                let val_range = (max_val - min_val).max(1.0);
+                                                match comp.graph_mode {
+                                                    GraphMode::ValueGraph => {
+                                                        painter.line_segment(
+                                                            [egui::pos2(track_rect.left(), row_center_y), egui::pos2(track_rect.right(), row_center_y)],
+                                                            egui::Stroke::new(0.5, egui::Color32::from_gray(38)),
+                                                        );
 
-                                                let to_screen_y = |val: f32| {
-                                                    let t = (val - min_val) / val_range;
-                                                    row_rect.bottom() - (t * (row.row_height - 12.0) + 6.0)
-                                                };
-
-                                                for (keyframe_index, curr) in prop.keyframes.iter().enumerate() {
-                                                    let x1 = track_rect.left() + (curr.time * pps);
-                                                    let y1 = to_screen_y(curr.value);
-
-                                                    if let Some(next) = prop.keyframes.get(keyframe_index + 1) {
-                                                        let x2 = track_rect.left() + (next.time * pps);
-                                                        let y2 = to_screen_y(next.value);
-
-                                                        let curve = curr.ease.unwrap_or(BezierControl {
-                                                            cp1: 0.33,
-                                                            cp2: 0.67,
-                                                        });
-
-                                                        let p1 = egui::pos2(x1, y1);
-                                                        let p2 = egui::pos2(x1 + (x2 - x1) * curve.cp1, y1);
-                                                        let p3 = egui::pos2(x1 + (x2 - x1) * curve.cp2, y2);
-                                                        let p4 = egui::pos2(x2, y2);
-
-                                                        painter.add(egui::Shape::CubicBezier(
-                                                            egui::epaint::CubicBezierShape {
-                                                                points: [p1, p2, p3, p4],
-                                                                closed: false,
-                                                                fill: egui::Color32::TRANSPARENT,
-                                                                stroke: egui::epaint::PathStroke::new(
-                                                                    1.8,
-                                                                    egui::Color32::from_rgb(255, 215, 75),
-                                                                ),
-                                                            },
-                                                        ));
-
-                                                        let is_selected = selected.as_ref().is_some_and(|sel| {
-                                                            sel.layer_index == row.layer_index
-                                                                && sel.property_name == *prop_name
-                                                                && sel.keyframe_index == keyframe_index
-                                                        });
-
-                                                        if is_selected {
-                                                            painter.line_segment([p1, p2], egui::Stroke::new(1.0, egui::Color32::from_gray(140)));
-                                                            painter.circle_filled(p2, 3.5, egui::Color32::from_rgb(100, 200, 255));
-
-                                                            let next_p1 = egui::pos2(x2, y2);
-                                                            let next_p2 = p3;
-                                                            painter.line_segment([next_p1, next_p2], egui::Stroke::new(1.0, egui::Color32::from_gray(140)));
-                                                            painter.circle_filled(next_p2, 3.5, egui::Color32::from_rgb(100, 200, 255));
+                                                        let mut min_val = prop.base_value;
+                                                        let mut max_val = prop.base_value;
+                                                        for kf in &prop.keyframes {
+                                                            min_val = min_val.min(kf.value);
+                                                            max_val = max_val.max(kf.value);
                                                         }
+                                                        let val_range = (max_val - min_val).max(1.0);
 
-                                                        if track_res.clicked() {
-                                                            if let Some(pos) = track_res.interact_pointer_pos() {
-                                                                if pos.distance(p2) <= 8.0 {
-                                                                    clicked_keyframe = true;
-                                                                    clicked_selection = Some(SelectedKeyframe {
-                                                                        layer_index: row.layer_index,
-                                                                        property_name: prop_name.clone(),
-                                                                        keyframe_index,
-                                                                        handle: Some(CurveHandle::Out),
-                                                                    });
-                                                                } else if pos.distance(p3) <= 8.0 {
-                                                                    clicked_keyframe = true;
-                                                                    clicked_selection = Some(SelectedKeyframe {
-                                                                        layer_index: row.layer_index,
-                                                                        property_name: prop_name.clone(),
-                                                                        keyframe_index,
-                                                                        handle: Some(CurveHandle::In),
-                                                                    });
+                                                        let to_screen_y = |val: f32| {
+                                                            let t = (val - min_val) / val_range;
+                                                            row_rect.bottom() - (t * (row.row_height - 14.0) + 7.0)
+                                                        };
+
+                                                        // Value labels along the track left
+                                                        painter.text(
+                                                            egui::pos2(track_rect.left() + 4.0, row_rect.top() + 8.0),
+                                                            egui::Align2::LEFT_CENTER,
+                                                            format!("max: {:.1}", max_val),
+                                                            egui::FontId::proportional(9.0),
+                                                            egui::Color32::from_gray(100),
+                                                        );
+                                                        painter.text(
+                                                            egui::pos2(track_rect.left() + 4.0, row_rect.bottom() - 8.0),
+                                                            egui::Align2::LEFT_CENTER,
+                                                            format!("min: {:.1}", min_val),
+                                                            egui::FontId::proportional(9.0),
+                                                            egui::Color32::from_gray(100),
+                                                        );
+
+                                                        for (keyframe_index, curr) in prop.keyframes.iter().enumerate() {
+                                                            let x1 = track_rect.left() + (curr.time * pps);
+                                                            let y1 = to_screen_y(curr.value);
+
+                                                            if let Some(next) = prop.keyframes.get(keyframe_index + 1) {
+                                                                let x2 = track_rect.left() + (next.time * pps);
+                                                                let y2 = to_screen_y(next.value);
+
+                                                                let curve = curr.ease.unwrap_or(BezierControl {
+                                                                    cp1: 0.33,
+                                                                    cp2: 0.67,
+                                                                });
+
+                                                                let p1 = egui::pos2(x1, y1);
+                                                                let p2 = egui::pos2(x1 + (x2 - x1) * curve.cp1, y1);
+                                                                let p3 = egui::pos2(x1 + (x2 - x1) * curve.cp2, y2);
+                                                                let p4 = egui::pos2(x2, y2);
+
+                                                                painter.add(egui::Shape::CubicBezier(
+                                                                    egui::epaint::CubicBezierShape {
+                                                                        points: [p1, p2, p3, p4],
+                                                                        closed: false,
+                                                                        fill: egui::Color32::TRANSPARENT,
+                                                                        stroke: egui::epaint::PathStroke::new(
+                                                                            2.0,
+                                                                            egui::Color32::from_rgb(255, 215, 75),
+                                                                        ),
+                                                                    },
+                                                                ));
+
+                                                                let is_selected = selected.as_ref().is_some_and(|sel| {
+                                                                    sel.layer_index == row.layer_index
+                                                                        && sel.property_name == *prop_name
+                                                                        && sel.keyframe_index == keyframe_index
+                                                                });
+
+                                                                if is_selected {
+                                                                    painter.line_segment([p1, p2], egui::Stroke::new(1.2, egui::Color32::from_rgb(100, 180, 255)));
+                                                                    painter.circle_filled(p2, 4.0, egui::Color32::from_rgb(0, 190, 255));
+                                                                    painter.circle_stroke(p2, 4.0, egui::Stroke::new(1.0, egui::Color32::WHITE));
+
+                                                                    let next_p1 = egui::pos2(x2, y2);
+                                                                    let next_p2 = p3;
+                                                                    painter.line_segment([next_p1, next_p2], egui::Stroke::new(1.2, egui::Color32::from_rgb(100, 180, 255)));
+                                                                    painter.circle_filled(next_p2, 4.0, egui::Color32::from_rgb(0, 190, 255));
+                                                                    painter.circle_stroke(next_p2, 4.0, egui::Stroke::new(1.0, egui::Color32::WHITE));
+                                                                }
+
+                                                                if track_res.clicked() {
+                                                                    if let Some(pos) = track_res.interact_pointer_pos() {
+                                                                        if pos.distance(p2) <= 8.0 {
+                                                                            clicked_keyframe = true;
+                                                                            clicked_selection = Some(SelectedKeyframe {
+                                                                                layer_index: row.layer_index,
+                                                                                property_name: prop_name.clone(),
+                                                                                keyframe_index,
+                                                                                handle: Some(CurveHandle::Out),
+                                                                            });
+                                                                        } else if pos.distance(p3) <= 8.0 {
+                                                                            clicked_keyframe = true;
+                                                                            clicked_selection = Some(SelectedKeyframe {
+                                                                                layer_index: row.layer_index,
+                                                                                property_name: prop_name.clone(),
+                                                                                keyframe_index,
+                                                                                handle: Some(CurveHandle::In),
+                                                                            });
+                                                                        }
+                                                                    }
+                                                                }
+
+                                                                if track_res.dragged() {
+                                                                    if let (Some(sel), Some(pos)) = (selected.as_ref(), track_res.interact_pointer_pos()) {
+                                                                        if sel.layer_index == row.layer_index
+                                                                            && sel.property_name == *prop_name
+                                                                            && sel.keyframe_index == keyframe_index
+                                                                        {
+                                                                            let denom = (x2 - x1).abs().max(1.0);
+                                                                            match sel.handle {
+                                                                                Some(CurveHandle::Out) => {
+                                                                                    curve_handle_edit = Some((
+                                                                                        row.layer_index,
+                                                                                        prop_name.clone(),
+                                                                                        keyframe_index,
+                                                                                        CurveHandle::Out,
+                                                                                        ((pos.x - x1) / denom).clamp(0.0, 1.0),
+                                                                                    ));
+                                                                                }
+                                                                                Some(CurveHandle::In) => {
+                                                                                    curve_handle_edit = Some((
+                                                                                        row.layer_index,
+                                                                                        prop_name.clone(),
+                                                                                        keyframe_index,
+                                                                                        CurveHandle::In,
+                                                                                        ((pos.x - x1) / denom).clamp(0.0, 1.0),
+                                                                                    ));
+                                                                                }
+                                                                                None => {}
+                                                                            }
+                                                                        }
+                                                                    }
                                                                 }
                                                             }
-                                                        }
 
-                                                        if track_res.dragged() {
-                                                            if let (Some(sel), Some(pos)) = (selected.as_ref(), track_res.interact_pointer_pos()) {
-                                                                if sel.layer_index == row.layer_index
+                                                            // Draw keyframe vertex point
+                                                            let is_selected = selected.as_ref().is_some_and(|sel| {
+                                                                sel.layer_index == row.layer_index
                                                                     && sel.property_name == *prop_name
                                                                     && sel.keyframe_index == keyframe_index
-                                                                {
-                                                                    let denom = (x2 - x1).abs().max(1.0);
-                                                                    match sel.handle {
-                                                                        Some(CurveHandle::Out) => {
-                                                                            curve_handle_edit = Some((
-                                                                                row.layer_index,
-                                                                                prop_name.clone(),
-                                                                                keyframe_index,
-                                                                                CurveHandle::Out,
-                                                                                ((pos.x - x1) / denom).clamp(0.0, 1.0),
-                                                                            ));
-                                                                        }
-                                                                        Some(CurveHandle::In) => {
-                                                                            curve_handle_edit = Some((
-                                                                                row.layer_index,
-                                                                                prop_name.clone(),
-                                                                                keyframe_index,
-                                                                                CurveHandle::In,
-                                                                                ((pos.x - x1) / denom).clamp(0.0, 1.0),
-                                                                            ));
-                                                                        }
-                                                                        None => {}
+                                                            });
+
+                                                            painter.circle_filled(
+                                                                egui::pos2(x1, y1),
+                                                                if is_selected { 5.0 } else { 3.5 },
+                                                                if is_selected { egui::Color32::WHITE } else { egui::Color32::from_rgb(255, 215, 75) },
+                                                            );
+                                                            if is_selected {
+                                                                painter.circle_stroke(
+                                                                    egui::pos2(x1, y1),
+                                                                    6.5,
+                                                                    egui::Stroke::new(1.5, egui::Color32::from_rgb(0, 180, 255)),
+                                                                );
+                                                            }
+
+                                                            if track_res.clicked() {
+                                                                if let Some(pos) = track_res.interact_pointer_pos() {
+                                                                    if pos.distance(egui::pos2(x1, y1)) <= 9.0 {
+                                                                        clicked_keyframe = true;
+                                                                        clicked_selection = Some(SelectedKeyframe {
+                                                                            layer_index: row.layer_index,
+                                                                            property_name: prop_name.clone(),
+                                                                            keyframe_index,
+                                                                            handle: None,
+                                                                        });
                                                                     }
                                                                 }
                                                             }
                                                         }
                                                     }
+                                                    GraphMode::SpeedGraph => {
+                                                        let base_y = row_rect.bottom() - 6.0;
+                                                        painter.line_segment(
+                                                            [egui::pos2(track_rect.left(), base_y), egui::pos2(track_rect.right(), base_y)],
+                                                            egui::Stroke::new(1.0, egui::Color32::from_gray(50)),
+                                                        );
 
-                                                    // Draw keyframe vertex point
-                                                    let is_selected = selected.as_ref().is_some_and(|sel| {
-                                                        sel.layer_index == row.layer_index
-                                                            && sel.property_name == *prop_name
-                                                            && sel.keyframe_index == keyframe_index
-                                                    });
-
-                                                    painter.circle_filled(
-                                                        egui::pos2(x1, y1),
-                                                        if is_selected { 4.5 } else { 3.0 },
-                                                        if is_selected { egui::Color32::WHITE } else { egui::Color32::from_rgb(240, 185, 45) },
-                                                    );
-
-                                                    if track_res.clicked() {
-                                                        if let Some(pos) = track_res.interact_pointer_pos() {
-                                                            if pos.distance(egui::pos2(x1, y1)) <= 9.0 {
-                                                                clicked_keyframe = true;
-                                                                clicked_selection = Some(SelectedKeyframe {
-                                                                    layer_index: row.layer_index,
-                                                                    property_name: prop_name.clone(),
-                                                                    keyframe_index,
-                                                                    handle: None,
-                                                                });
+                                                        let mut max_speed = 10.0f32;
+                                                        for (keyframe_index, curr) in prop.keyframes.iter().enumerate() {
+                                                            if let Some(next) = prop.keyframes.get(keyframe_index + 1) {
+                                                                let dt = (next.time - curr.time).abs().max(0.001);
+                                                                let dv = (next.value - curr.value).abs();
+                                                                let avg_speed = dv / dt;
+                                                                max_speed = max_speed.max(avg_speed * 2.2);
                                                             }
+                                                        }
+
+                                                        painter.text(
+                                                            egui::pos2(track_rect.left() + 4.0, row_rect.top() + 8.0),
+                                                            egui::Align2::LEFT_CENTER,
+                                                            format!("peak: {:.1} /s", max_speed),
+                                                            egui::FontId::proportional(9.0),
+                                                            egui::Color32::from_rgb(255, 160, 40),
+                                                        );
+
+                                                        let to_speed_y = |spd: f32| {
+                                                            let t = (spd / max_speed).clamp(0.0, 1.0);
+                                                            row_rect.bottom() - (t * (row.row_height - 14.0) + 7.0)
+                                                        };
+
+                                                        for (keyframe_index, curr) in prop.keyframes.iter().enumerate() {
+                                                            let x1 = track_rect.left() + (curr.time * pps);
+
+                                                            if let Some(next) = prop.keyframes.get(keyframe_index + 1) {
+                                                                let x2 = track_rect.left() + (next.time * pps);
+                                                                let dt = (next.time - curr.time).abs().max(0.001);
+                                                                let dv = (next.value - curr.value).abs();
+                                                                let avg_speed = dv / dt;
+
+                                                                let curve = curr.ease.unwrap_or(BezierControl {
+                                                                    cp1: 0.33,
+                                                                    cp2: 0.67,
+                                                                });
+
+                                                                let steps = 24;
+                                                                let mut speed_pts = Vec::with_capacity(steps + 1);
+
+                                                                for s in 0..=steps {
+                                                                    let u = s as f32 / steps as f32;
+                                                                    let px = x1 + u * (x2 - x1);
+                                                                    let shape = (u * std::f32::consts::PI).sin().powf(1.0 + (curve.cp1 - curve.cp2).abs() * 2.0);
+                                                                    let speed_val = avg_speed * shape * (1.5 + (curve.cp2 - curve.cp1).abs());
+                                                                    let py = to_speed_y(speed_val);
+                                                                    speed_pts.push(egui::pos2(px, py));
+                                                                }
+
+                                                                for window in speed_pts.windows(2) {
+                                                                    painter.line_segment(
+                                                                        [window[0], window[1]],
+                                                                        egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 160, 40)),
+                                                                    );
+                                                                }
+                                                            }
+
+                                                            painter.circle_filled(
+                                                                egui::pos2(x1, base_y),
+                                                                3.5,
+                                                                egui::Color32::from_rgb(255, 160, 40),
+                                                            );
                                                         }
                                                     }
                                                 }
@@ -1406,7 +1882,7 @@ pub fn draw_pro_ae_timeline(
                             if (track_res.dragged() || track_res.clicked()) && !clicked_keyframe {
                                 if let Some(pos) = track_res.interact_pointer_pos() {
                                     let new_time = ((pos.x - track_rect.left()) / pps).clamp(0.0, timeline_duration);
-                                    comp.current_time = new_time;
+                                    comp.current_time = snap_time(comp, new_time, 10.0 / pps);
                                 }
                             }
                         });

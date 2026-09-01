@@ -1,0 +1,8 @@
+.spec effect
+name: Pixelate Mosaic
+category: Stylize
+description: Creates a retro pixel art mosaic look.
+slider: pixel_size, 8.0, 1.0, 64.0, 1.0
+slider: blend, 100.0, 0.0, 100.0, 1.0
+
+type: pixelate

@@ -1,0 +1,24 @@
+.spec effect
+name: Cinematic Grade
+category: Color Correction
+description: Applies a cinematic teal and orange color grading look.
+slider: teal_shadows, 40.0, 0.0, 100.0, 1.0
+slider: orange_highlights, 45.0, 0.0, 100.0, 1.0
+slider: contrast, 20.0, -50.0, 50.0, 1.0
+slider: saturation, 15.0, -100.0, 100.0, 1.0
+
+// Cinematic teal & orange grading formula
+lum = r * 0.299 + g * 0.587 + b * 0.114;
+teal_factor = (1.0 - lum) * (teal_shadows / 100.0);
+orange_factor = lum * (orange_highlights / 100.0);
+c_factor = (1.0 + contrast / 100.0);
+
+r = ((r - 0.5) * c_factor + 0.5 + orange_factor * 0.3 - teal_factor * 0.2);
+g = ((g - 0.5) * c_factor + 0.5 + orange_factor * 0.1);
+b = ((b - 0.5) * c_factor + 0.5 + teal_factor * 0.4 - orange_factor * 0.2);
+
+sat_boost = 1.0 + saturation / 100.0;
+gray = r * 0.299 + g * 0.587 + b * 0.114;
+r = mix(gray, r, sat_boost);
+g = mix(gray, g, sat_boost);
+b = mix(gray, b, sat_boost);

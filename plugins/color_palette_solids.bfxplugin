@@ -1,0 +1,5 @@
+.spec functional
+name: Generate Color Palette Solids
+category: Design & Utilities
+description: Generates a balanced 5-color aesthetic solid palette across the composition.
+action: create_palette_solids

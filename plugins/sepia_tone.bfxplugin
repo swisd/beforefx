@@ -1,0 +1,15 @@
+.spec effect
+name: Sepia Tone
+category: Color Correction
+description: Gives footage or layers a warm nostalgic sepia tint.
+slider: intensity, 80.0, 0.0, 100.0, 1.0
+slider: tone_r, 1.2, 0.0, 2.0, 0.05
+slider: tone_g, 1.0, 0.0, 2.0, 0.05
+slider: tone_b, 0.75, 0.0, 2.0, 0.05
+
+// Color formula for Sepia
+gray = r * 0.299 + g * 0.587 + b * 0.114;
+mix_amt = intensity / 100.0;
+r = mix(r, clamp(gray * tone_r, 0.0, 1.0), mix_amt);
+g = mix(g, clamp(gray * tone_g, 0.0, 1.0), mix_amt);
+b = mix(b, clamp(gray * tone_b, 0.0, 1.0), mix_amt);
