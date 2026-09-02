@@ -1055,6 +1055,41 @@ pub fn apply_image_builtin_effect(
             let feather = effect.properties.get("feather").map_or(40.0, |p| p.get_value_at(time));
             process_image_vignette_grain(img, amt, 0.0, feather * 0.2, time);
         }
+        EffectType::FastBlur => {
+            let radius = effect.properties.get("radius").map_or(10.0, |p| p.get_value_at(time));
+            let iters = effect.properties.get("iterations").map_or(2.0, |p| p.get_value_at(time));
+            process_image_fast_blur(img, radius, iters as usize);
+        }
+        EffectType::DirectionalBlur => {
+            let length = effect.properties.get("length").map_or(15.0, |p| p.get_value_at(time));
+            let direction = effect.properties.get("direction").map_or(0.0, |p| p.get_value_at(time));
+            process_image_directional_blur(img, length, direction);
+        }
+        EffectType::HueSaturation => {
+            let hue = effect.properties.get("hue").map_or(0.0, |p| p.get_value_at(time));
+            let sat = effect.properties.get("saturation").map_or(0.0, |p| p.get_value_at(time));
+            let lightness = effect.properties.get("lightness").map_or(0.0, |p| p.get_value_at(time));
+            process_image_hue_saturation(img, hue, sat, lightness);
+        }
+        EffectType::Fill => {
+            let cr = effect.properties.get("colorR").map_or(255.0, |p| p.get_value_at(time)) / 255.0;
+            let cg = effect.properties.get("colorG").map_or(0.0, |p| p.get_value_at(time)) / 255.0;
+            let cb = effect.properties.get("colorB").map_or(0.0, |p| p.get_value_at(time)) / 255.0;
+            let op = effect.properties.get("opacity").map_or(100.0, |p| p.get_value_at(time)) / 100.0;
+            process_image_fill(img, cr, cg, cb, op);
+        }
+        EffectType::Glow => {
+            let radius = effect.properties.get("radius").map_or(15.0, |p| p.get_value_at(time));
+            let thresh = effect.properties.get("threshold").map_or(50.0, |p| p.get_value_at(time));
+            let intens = effect.properties.get("intensity").map_or(100.0, |p| p.get_value_at(time));
+            process_image_glow(img, radius, thresh, intens);
+        }
+        EffectType::WaveWarp => {
+            let height = effect.properties.get("height").map_or(10.0, |p| p.get_value_at(time));
+            let width = effect.properties.get("width").map_or(40.0, |p| p.get_value_at(time));
+            let speed = effect.properties.get("speed").map_or(1.0, |p| p.get_value_at(time));
+            process_image_wave_warp(img, height, width, speed, time);
+        }
         _ => {}
     }
 }
@@ -1363,6 +1398,244 @@ pub fn process_image_formula(
         }
         if let Some(&a) = vars.get("a") {
             chunk[3] = (a.clamp(0.0, 1.0) * 255.0) as u8;
+        }
+    }
+}
+
+pub fn process_image_fast_blur(img: &mut macroquad::texture::Image, radius: f32, iterations: usize) {
+    let r = radius.round() as usize;
+    if r == 0 || iterations == 0 {
+        return;
+    }
+    let w = img.width as usize;
+    let h = img.height as usize;
+    if w == 0 || h == 0 || img.bytes.len() < w * h * 4 {
+        return;
+    }
+
+    let iters = iterations.clamp(1, 4);
+    for _ in 0..iters {
+        let src = img.bytes.clone();
+        // Horizontal pass
+        for y in 0..h {
+            for x in 0..w {
+                let x_min = x.saturating_sub(r);
+                let x_max = (x + r).min(w - 1);
+                let count = (x_max - x_min + 1) as u32;
+                let mut sum_r = 0u32;
+                let mut sum_g = 0u32;
+                let mut sum_b = 0u32;
+                let mut sum_a = 0u32;
+                for kx in x_min..=x_max {
+                    let idx = (y * w + kx) * 4;
+                    sum_r += src[idx] as u32;
+                    sum_g += src[idx + 1] as u32;
+                    sum_b += src[idx + 2] as u32;
+                    sum_a += src[idx + 3] as u32;
+                }
+                let dst_idx = (y * w + x) * 4;
+                img.bytes[dst_idx] = (sum_r / count) as u8;
+                img.bytes[dst_idx + 1] = (sum_g / count) as u8;
+                img.bytes[dst_idx + 2] = (sum_b / count) as u8;
+                img.bytes[dst_idx + 3] = (sum_a / count) as u8;
+            }
+        }
+        let src2 = img.bytes.clone();
+        // Vertical pass
+        for y in 0..h {
+            let y_min = y.saturating_sub(r);
+            let y_max = (y + r).min(h - 1);
+            let count = (y_max - y_min + 1) as u32;
+            for x in 0..w {
+                let mut sum_r = 0u32;
+                let mut sum_g = 0u32;
+                let mut sum_b = 0u32;
+                let mut sum_a = 0u32;
+                for ky in y_min..=y_max {
+                    let idx = (ky * w + x) * 4;
+                    sum_r += src2[idx] as u32;
+                    sum_g += src2[idx + 1] as u32;
+                    sum_b += src2[idx + 2] as u32;
+                    sum_a += src2[idx + 3] as u32;
+                }
+                let dst_idx = (y * w + x) * 4;
+                img.bytes[dst_idx] = (sum_r / count) as u8;
+                img.bytes[dst_idx + 1] = (sum_g / count) as u8;
+                img.bytes[dst_idx + 2] = (sum_b / count) as u8;
+                img.bytes[dst_idx + 3] = (sum_a / count) as u8;
+            }
+        }
+    }
+}
+
+pub fn process_image_directional_blur(img: &mut macroquad::texture::Image, length: f32, direction_deg: f32) {
+    if length <= 0.5 {
+        return;
+    }
+    let w = img.width as usize;
+    let h = img.height as usize;
+    if w == 0 || h == 0 || img.bytes.len() < w * h * 4 {
+        return;
+    }
+
+    let rad = direction_deg.to_radians();
+    let dx = rad.cos();
+    let dy = rad.sin();
+    let steps = (length.round() as usize).clamp(2, 64);
+    let half_steps = steps / 2;
+    let src = img.bytes.clone();
+
+    for y in 0..h {
+        for x in 0..w {
+            let mut sum_r = 0.0f32;
+            let mut sum_g = 0.0f32;
+            let mut sum_b = 0.0f32;
+            let mut sum_a = 0.0f32;
+            let mut count = 0.0f32;
+
+            for s in 0..steps {
+                let offset = (s as f32) - (half_steps as f32);
+                let sx = ((x as f32) + offset * dx).round() as isize;
+                let sy = ((y as f32) + offset * dy).round() as isize;
+                if sx >= 0 && sx < w as isize && sy >= 0 && sy < h as isize {
+                    let idx = (sy as usize * w + sx as usize) * 4;
+                    sum_r += src[idx] as f32;
+                    sum_g += src[idx + 1] as f32;
+                    sum_b += src[idx + 2] as f32;
+                    sum_a += src[idx + 3] as f32;
+                    count += 1.0;
+                }
+            }
+
+            if count > 0.0 {
+                let dst_idx = (y * w + x) * 4;
+                img.bytes[dst_idx] = (sum_r / count).clamp(0.0, 255.0) as u8;
+                img.bytes[dst_idx + 1] = (sum_g / count).clamp(0.0, 255.0) as u8;
+                img.bytes[dst_idx + 2] = (sum_b / count).clamp(0.0, 255.0) as u8;
+                img.bytes[dst_idx + 3] = (sum_a / count).clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+}
+
+pub fn process_image_hue_saturation(img: &mut macroquad::texture::Image, hue: f32, sat: f32, lightness: f32) {
+    let hue_shift = hue / 360.0;
+    let sat_mul = 1.0 + (sat / 100.0);
+    let light_shift = lightness / 100.0;
+
+    for chunk in img.bytes.chunks_exact_mut(4) {
+        let r = chunk[0] as f32 / 255.0;
+        let g = chunk[1] as f32 / 255.0;
+        let b = chunk[2] as f32 / 255.0;
+
+        let max = r.max(g.max(b));
+        let min = r.min(g.min(b));
+        let mut h = 0.0f32;
+        let mut s = 0.0f32;
+        let mut l = (max + min) / 2.0;
+
+        if (max - min).abs() > 0.0001 {
+            let d = max - min;
+            s = if l > 0.5 { d / (2.0 - max - min) } else { d / (max + min) };
+            if (max - r).abs() < 0.0001 {
+                h = (g - b) / d + (if g < b { 6.0 } else { 0.0 });
+            } else if (max - g).abs() < 0.0001 {
+                h = (b - r) / d + 2.0;
+            } else {
+                h = (r - g) / d + 4.0;
+            }
+            h /= 6.0;
+        }
+
+        h = (h + hue_shift).rem_euclid(1.0);
+        s = (s * sat_mul).clamp(0.0, 1.0);
+        l = (l + light_shift).clamp(0.0, 1.0);
+
+        // Convert back to RGB
+        let (nr, ng, nb) = if s <= 0.0001 {
+            (l, l, l)
+        } else {
+            let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+            let p = 2.0 * l - q;
+            let hue2rgb = |p: f32, q: f32, mut t: f32| -> f32 {
+                if t < 0.0 { t += 1.0; }
+                if t > 1.0 { t -= 1.0; }
+                if t < 1.0 / 6.0 { return p + (q - p) * 6.0 * t; }
+                if t < 1.0 / 2.0 { return q; }
+                if t < 2.0 / 3.0 { return p + (q - p) * (2.0 / 3.0 - t) * 6.0; }
+                p
+            };
+            (
+                hue2rgb(p, q, h + 1.0 / 3.0),
+                hue2rgb(p, q, h),
+                hue2rgb(p, q, h - 1.0 / 3.0),
+            )
+        };
+
+        chunk[0] = (nr.clamp(0.0, 1.0) * 255.0) as u8;
+        chunk[1] = (ng.clamp(0.0, 1.0) * 255.0) as u8;
+        chunk[2] = (nb.clamp(0.0, 1.0) * 255.0) as u8;
+    }
+}
+
+pub fn process_image_fill(img: &mut macroquad::texture::Image, cr: f32, cg: f32, cb: f32, opacity: f32) {
+    let op = opacity.clamp(0.0, 1.0);
+    for chunk in img.bytes.chunks_exact_mut(4) {
+        let r = chunk[0] as f32 / 255.0;
+        let g = chunk[1] as f32 / 255.0;
+        let b = chunk[2] as f32 / 255.0;
+        chunk[0] = ((r * (1.0 - op) + cr * op).clamp(0.0, 1.0) * 255.0) as u8;
+        chunk[1] = ((g * (1.0 - op) + cg * op).clamp(0.0, 1.0) * 255.0) as u8;
+        chunk[2] = ((b * (1.0 - op) + cb * op).clamp(0.0, 1.0) * 255.0) as u8;
+    }
+}
+
+pub fn process_image_glow(img: &mut macroquad::texture::Image, radius: f32, threshold: f32, intensity: f32) {
+    let thresh = threshold / 100.0;
+    let intens = intensity / 100.0;
+    if intens <= 0.001 {
+        return;
+    }
+    let mut bloom = img.clone();
+    for chunk in bloom.bytes.chunks_exact_mut(4) {
+        let lum = (chunk[0] as f32 * 0.299 + chunk[1] as f32 * 0.587 + chunk[2] as f32 * 0.114) / 255.0;
+        if lum < thresh {
+            chunk[0] = 0;
+            chunk[1] = 0;
+            chunk[2] = 0;
+        }
+    }
+    process_image_fast_blur(&mut bloom, radius, 2);
+    for (dst, src) in img.bytes.chunks_exact_mut(4).zip(bloom.bytes.chunks_exact(4)) {
+        let r = (dst[0] as f32) + (src[0] as f32) * intens;
+        let g = (dst[1] as f32) + (src[1] as f32) * intens;
+        let b = (dst[2] as f32) + (src[2] as f32) * intens;
+        dst[0] = r.clamp(0.0, 255.0) as u8;
+        dst[1] = g.clamp(0.0, 255.0) as u8;
+        dst[2] = b.clamp(0.0, 255.0) as u8;
+    }
+}
+
+pub fn process_image_wave_warp(img: &mut macroquad::texture::Image, wave_h: f32, wave_w: f32, speed: f32, time: f32) {
+    if wave_h <= 0.1 || wave_w <= 0.1 {
+        return;
+    }
+    let w = img.width as usize;
+    let h = img.height as usize;
+    if w == 0 || h == 0 || img.bytes.len() < w * h * 4 {
+        return;
+    }
+    let src = img.bytes.clone();
+    let phase = time * speed * 4.0;
+    let freq = std::f32::consts::TAU / wave_w;
+
+    for y in 0..h {
+        let dx = (y as f32 * freq + phase).sin() * wave_h;
+        for x in 0..w {
+            let src_x = ((x as f32 + dx).round() as isize).clamp(0, (w - 1) as isize) as usize;
+            let src_idx = (y * w + src_x) * 4;
+            let dst_idx = (y * w + x) * 4;
+            img.bytes[dst_idx..dst_idx + 4].copy_from_slice(&src[src_idx..src_idx + 4]);
         }
     }
 }

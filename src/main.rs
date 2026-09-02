@@ -20,6 +20,7 @@ use playa_ffmpeg::{self as ffmpeg, dict};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use egui_macroquad::egui::{Color32, RichText};
+use lz4_flex::block;
 
 fn resource_icon(kind: ResourceKind) -> &'static str {
     match kind {
@@ -517,11 +518,172 @@ pub fn decompress_rgba_frame(compressed: &[u8], out_raw: &mut [u8]) -> bool {
         decompress_rgba_frame_ultra(compressed, out_raw)
     } else if &compressed[0..4] == b"BFXC" {
         decompress_rgba_frame_planar(compressed, out_raw)
+    } else if &compressed[0..4] == b"BFXP" {
+        decompress_rgba_frame_ultra_fast(compressed, out_raw)
+    } else if &compressed[0..4] == b"BFXL" {
+        decompress_rgba_frame_lz4(compressed, out_raw)
     } else if out_raw.len() >= compressed.len() {
         out_raw[..compressed.len()].copy_from_slice(compressed);
         true
     } else {
         false
+    }
+}
+
+pub fn compress_rgba_frame_ultra_fast(raw_rgba: &[u8]) -> Vec<u8> {
+    if raw_rgba.is_empty() {
+        return Vec::new();
+    }
+
+    let pixel_count = raw_rgba.len() / 4;
+    let mut compressed = Vec::with_capacity(raw_rgba.len() / 2);
+    compressed.extend_from_slice(b"BFXP");
+    compressed.extend_from_slice(&(raw_rgba.len() as u32).to_le_bytes());
+
+    // Safely treat RGBA bytes as native u32s for 4x faster equality comparisons.
+    // (This uses safe standard library alignment casting)
+    let mut fallback_pixels = Vec::new();
+    let (prefix, u32_slice, suffix) = unsafe { raw_rgba.align_to::<u32>() };
+
+    let slice = if prefix.is_empty() && suffix.is_empty() {
+        u32_slice // Fast path: Zero-cost cast
+    } else {
+        // Slow path: Only triggers if the buffer isn't 4-byte aligned
+        fallback_pixels = raw_rgba.chunks_exact(4)
+            .map(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        &fallback_pixels[..]
+    };
+
+    let mut i = 0;
+    while i < pixel_count {
+        let px = slice[i];
+        let mut run_len = 1;
+
+        // LLVM can heavily optimize this flat slice comparison
+        while i + run_len < pixel_count && run_len < 32767 && slice[i + run_len] == px {
+            run_len += 1;
+        }
+
+        if run_len >= 2 {
+            let tag = 0x8000u16 | (run_len as u16);
+            compressed.extend_from_slice(&tag.to_le_bytes());
+            compressed.extend_from_slice(&raw_rgba[i * 4..i * 4 + 4]); // Direct copy
+            i += run_len;
+        } else {
+            let lit_start = i;
+            let mut lit_len = 1;
+            while i + lit_len < pixel_count && lit_len < 32767 {
+                if i + lit_len + 1 < pixel_count && slice[i + lit_len] == slice[i + lit_len + 1] {
+                    break;
+                }
+                lit_len += 1;
+            }
+
+            let tag = lit_len as u16;
+            compressed.extend_from_slice(&tag.to_le_bytes());
+            compressed.extend_from_slice(&raw_rgba[lit_start * 4..(lit_start + lit_len) * 4]);
+            i += lit_len;
+        }
+    }
+
+    compressed
+}
+
+pub fn decompress_rgba_frame_ultra_fast(compressed: &[u8], out_raw: &mut [u8]) -> bool {
+    if compressed.len() < 8 || &compressed[0..4] != b"BFXP" {
+        return false;
+    }
+
+    // Safely extract the length without panicking on bad data
+    let expected_len = u32::from_le_bytes(compressed[4..8].try_into().unwrap()) as usize;
+    if out_raw.len() < expected_len {
+        return false;
+    }
+
+    let pixel_count = expected_len / 4;
+    let mut c_idx = 8;
+    let mut p_idx = 0;
+
+    while p_idx < pixel_count && c_idx + 2 <= compressed.len() {
+        let tag = u16::from_le_bytes([compressed[c_idx], compressed[c_idx + 1]]);
+        c_idx += 2;
+
+        if (tag & 0x8000) != 0 {
+            let count = ((tag & 0x7FFF) as usize).min(pixel_count - p_idx);
+            if c_idx + 4 > compressed.len() {
+                break;
+            }
+
+            let px_bytes = &compressed[c_idx..c_idx + 4];
+            c_idx += 4;
+
+            // Grabbing the exact target slice allows LLVM to vectorize the fill
+            // without doing bounds checks on every iteration.
+            let dest_slice = &mut out_raw[p_idx * 4..(p_idx + count) * 4];
+            for chunk in dest_slice.chunks_exact_mut(4) {
+                chunk.copy_from_slice(px_bytes);
+            }
+            p_idx += count;
+        } else {
+            let count = (tag as usize).min(pixel_count - p_idx);
+            let byte_count = count * 4;
+            if c_idx + byte_count > compressed.len() {
+                break;
+            }
+
+            // Direct memory copy, instantly optimized by the compiler
+            out_raw[p_idx * 4..(p_idx + count) * 4]
+                .copy_from_slice(&compressed[c_idx..c_idx + byte_count]);
+
+            c_idx += byte_count;
+            p_idx += count;
+        }
+    }
+    true
+}
+
+pub fn compress_rgba_frame_lz4(raw_rgba: &[u8]) -> Vec<u8> {
+    if raw_rgba.is_empty() {
+        return Vec::new();
+    }
+
+    // Compress the raw pixel data using LZ4
+    let compressed_payload = block::compress(raw_rgba);
+
+    // Pre-allocate the exact size needed: 8 byte header + compressed data length
+    let mut compressed = Vec::with_capacity(8 + compressed_payload.len());
+
+    // Write a magic header and the expected uncompressed size (as little-endian u32)
+    // compressed.extend_from_slice(b"LZ4U");
+    compressed.extend_from_slice(b"BFXL");
+    compressed.extend_from_slice(&(raw_rgba.len() as u32).to_le_bytes());
+
+    // Append the actual LZ4 compressed data
+    compressed.extend_from_slice(&compressed_payload);
+
+    compressed
+}
+
+pub fn decompress_rgba_frame_lz4(compressed: &[u8], out_raw: &mut [u8]) -> bool {
+    // Validate the header length and magic bytes
+    if compressed.len() < 8 || &compressed[0..4] != b"BFXL" {
+        return false;
+    }
+
+    // Safely extract the expected uncompressed length
+    let expected_len = u32::from_le_bytes(compressed[4..8].try_into().unwrap()) as usize;
+
+    // Ensure the provided output buffer is large enough
+    if out_raw.len() < expected_len {
+        return false;
+    }
+
+    // Decompress the payload directly into the output slice.
+    // If the data is corrupted, `decompress_into` returns an Err, which we map to `false`.
+    match block::decompress_into(&compressed[8..], &mut out_raw[..expected_len]) {
+        Ok(bytes_written) => bytes_written == expected_len,
+        Err(_) => false,
     }
 }
 
@@ -578,7 +740,7 @@ impl RamPreviewCache {
             if self.decompress_buf.len() < expected_len {
                 self.decompress_buf.resize(expected_len, 0);
             }
-            let success = if cf.compressed.starts_with(b"BFXC") || cf.compressed.starts_with(b"BFXU") {
+            let success = if cf.compressed.starts_with(b"BFXC") || cf.compressed.starts_with(b"BFXU") || cf.compressed.starts_with(b"BFXP") || cf.compressed.starts_with(b"BFXL") {
                 decompress_rgba_frame(&cf.compressed, &mut self.decompress_buf[..expected_len])
             } else if cf.compressed.len() == expected_len {
                 self.decompress_buf[..expected_len].copy_from_slice(&cf.compressed);
@@ -609,6 +771,10 @@ impl RamPreviewCache {
             image.bytes.clone()
         } else if mode == CacheCompressionMode::UltraFastDirect {
             compress_rgba_frame_ultra(&image.bytes)
+        } else if mode == CacheCompressionMode::UltraFastDirectPlus {
+            compress_rgba_frame_ultra_fast(&image.bytes)
+        } else if mode == CacheCompressionMode::LZ4 {
+            compress_rgba_frame_ultra_fast(&image.bytes)
         } else {
             compress_rgba_frame_planar(&image.bytes)
         };
@@ -1623,11 +1789,89 @@ fn apply_color_effects_with_plugins(
     col
 }
 
+fn get_processed_image_texture(
+    tex: &Texture2D,
+    layer: &Layer,
+    time: f32,
+    plugin_registry: Option<&PluginRegistry>,
+) -> Texture2D {
+    if !layer.fx || layer.effects.is_empty() {
+        return tex.clone();
+    }
+    let has_image_effects = layer.effects.iter().any(|e| e.enabled);
+    if !has_image_effects {
+        return tex.clone();
+    }
+    let mut img = tex.get_texture_data();
+    for eff in &layer.effects {
+        if eff.enabled {
+            crate::plugin::apply_image_builtin_effect(&mut img, eff, time, plugin_registry);
+        }
+    }
+    Texture2D::from_image(&img)
+}
+
+fn get_processed_solid_texture(
+    color: [f32; 4],
+    width: usize,
+    height: usize,
+    layer: &Layer,
+    time: f32,
+    plugin_registry: Option<&PluginRegistry>,
+) -> Option<Texture2D> {
+    if !layer.fx || layer.effects.is_empty() {
+        return None;
+    }
+    let has_image_effects = layer.effects.iter().any(|e| e.enabled && matches!(
+        e.effect_type,
+        EffectType::Mp4UltraCompress
+            | EffectType::Plugin(_)
+            | EffectType::FastBlur
+            | EffectType::DirectionalBlur
+            | EffectType::Invert
+            | EffectType::Tint
+            | EffectType::BrightnessContrast
+            | EffectType::ChromaticAberration
+            | EffectType::Vignette
+            | EffectType::Glow
+            | EffectType::HueSaturation
+            | EffectType::WaveWarp
+    ));
+    if !has_image_effects {
+        return None;
+    }
+    let w = width.clamp(64, 512);
+    let h = height.clamp(64, 512);
+    let r = (color[0].clamp(0.0, 1.0) * 255.0) as u8;
+    let g = (color[1].clamp(0.0, 1.0) * 255.0) as u8;
+    let b = (color[2].clamp(0.0, 1.0) * 255.0) as u8;
+    let a = (color[3].clamp(0.0, 1.0) * 255.0) as u8;
+    let mut bytes = vec![0u8; w * h * 4];
+    for chunk in bytes.chunks_exact_mut(4) {
+        chunk[0] = r;
+        chunk[1] = g;
+        chunk[2] = b;
+        chunk[3] = a;
+    }
+    let mut img = macroquad::texture::Image {
+        bytes,
+        width: w as u16,
+        height: h as u16,
+    };
+    for eff in &layer.effects {
+        if eff.enabled {
+            crate::plugin::apply_image_builtin_effect(&mut img, eff, time, plugin_registry);
+        }
+    }
+    Some(Texture2D::from_image(&img))
+}
+
 fn draw_composition(
     comp: &Composition,
     textures: &HashMap<String, Texture2D>,
     time: f32,
     target: RenderTarget,
+    plugin_registry: Option<&PluginRegistry>,
 ) {
     let width = comp.settings.width as f32;
     let height = comp.settings.height as f32;
@@ -1709,6 +1953,7 @@ fn draw_composition(
                 LayerSource::Solid { color } => {
                     let base_col = Color::new(color[0], color[1], color[2], color[3] * op);
                     let final_col = apply_color_effects(base_col, layer, time);
+                    let proc_solid_tex = get_processed_solid_texture(*color, 200, 200, layer, time, plugin_registry);
 
                     let corners = [
                         transform_local_to_world(comp, layer_idx, vec3(0.0, 0.0, 0.0), time),
@@ -1723,8 +1968,42 @@ fn draw_composition(
                         project_3d_point(corners[3], &active_camera, width, height),
                     ];
                     if proj.iter().all(|p| p.visible) {
-                        draw_triangle(proj[0].screen, proj[1].screen, proj[2].screen, final_col);
-                        draw_triangle(proj[0].screen, proj[2].screen, proj[3].screen, final_col);
+                        if let Some(ref s_tex) = proc_solid_tex {
+                            let mesh = Mesh {
+                                vertices: vec![
+                                    Vertex {
+                                        position: vec3(proj[0].screen.x, proj[0].screen.y, 0.0),
+                                        uv: vec2(0.0, 0.0),
+                                        color: Color::new(1.0, 1.0, 1.0, op).into(),
+                                        normal: vec4(0.0, 0.0, 1.0, 0.0),
+                                    },
+                                    Vertex {
+                                        position: vec3(proj[1].screen.x, proj[1].screen.y, 0.0),
+                                        uv: vec2(1.0, 0.0),
+                                        color: Color::new(1.0, 1.0, 1.0, op).into(),
+                                        normal: vec4(0.0, 0.0, 1.0, 0.0),
+                                    },
+                                    Vertex {
+                                        position: vec3(proj[2].screen.x, proj[2].screen.y, 0.0),
+                                        uv: vec2(1.0, 1.0),
+                                        color: Color::new(1.0, 1.0, 1.0, op).into(),
+                                        normal: vec4(0.0, 0.0, 1.0, 0.0),
+                                    },
+                                    Vertex {
+                                        position: vec3(proj[3].screen.x, proj[3].screen.y, 0.0),
+                                        uv: vec2(0.0, 1.0),
+                                        color: Color::new(1.0, 1.0, 1.0, op).into(),
+                                        normal: vec4(0.0, 0.0, 1.0, 0.0),
+                                    },
+                                ],
+                                indices: vec![0, 1, 2, 0, 2, 3],
+                                texture: Some(s_tex.clone()),
+                            };
+                            draw_mesh(&mesh);
+                        } else {
+                            draw_triangle(proj[0].screen, proj[1].screen, proj[2].screen, final_col);
+                            draw_triangle(proj[0].screen, proj[2].screen, proj[3].screen, final_col);
+                        }
                         for i in 0..4 {
                             draw_line(
                                 proj[i].screen.x,
@@ -1738,7 +2017,8 @@ fn draw_composition(
                     }
                 }
                 LayerSource::Image { path } => {
-                    if let Some(tex) = textures.get(path) {
+                    if let Some(base_tex) = textures.get(path) {
+                        let tex = get_processed_image_texture(base_tex, layer, time, plugin_registry);
                         let tw = tex.width();
                         let th = tex.height();
                         let base_col = Color::new(1.0, 1.0, 1.0, op);
@@ -1785,7 +2065,7 @@ fn draw_composition(
                                     },
                                 ],
                                 indices: vec![0, 1, 2, 0, 2, 3],
-                                texture: Some(tex.clone()),
+                                texture: Some(tex),
                             };
                             draw_mesh(&mesh);
                         }
@@ -1944,6 +2224,7 @@ fn draw_composition(
                 LayerSource::Solid { color } => {
                     let base_col = Color::new(color[0], color[1], color[2], color[3] * op);
                     let final_col = apply_color_effects(base_col, layer, time);
+                    let proc_solid_tex = get_processed_solid_texture(*color, 200, 200, layer, time, plugin_registry);
 
                     let corners = [
                         transform_local_to_world(comp, layer_idx, vec3(0.0, 0.0, 0.0), time),
@@ -1958,8 +2239,42 @@ fn draw_composition(
                         project_3d_point(corners[3], &active_camera, width, height),
                     ];
                     if proj.iter().all(|p| p.visible) {
-                        draw_triangle(proj[0].screen, proj[1].screen, proj[2].screen, final_col);
-                        draw_triangle(proj[0].screen, proj[2].screen, proj[3].screen, final_col);
+                        if let Some(ref s_tex) = proc_solid_tex {
+                            let mesh = Mesh {
+                                vertices: vec![
+                                    Vertex {
+                                        position: vec3(proj[0].screen.x, proj[0].screen.y, 0.0),
+                                        uv: vec2(0.0, 0.0),
+                                        color: Color::new(1.0, 1.0, 1.0, op).into(),
+                                        normal: vec4(0.0, 0.0, 1.0, 0.0),
+                                    },
+                                    Vertex {
+                                        position: vec3(proj[1].screen.x, proj[1].screen.y, 0.0),
+                                        uv: vec2(1.0, 0.0),
+                                        color: Color::new(1.0, 1.0, 1.0, op).into(),
+                                        normal: vec4(0.0, 0.0, 1.0, 0.0),
+                                    },
+                                    Vertex {
+                                        position: vec3(proj[2].screen.x, proj[2].screen.y, 0.0),
+                                        uv: vec2(1.0, 1.0),
+                                        color: Color::new(1.0, 1.0, 1.0, op).into(),
+                                        normal: vec4(0.0, 0.0, 1.0, 0.0),
+                                    },
+                                    Vertex {
+                                        position: vec3(proj[3].screen.x, proj[3].screen.y, 0.0),
+                                        uv: vec2(0.0, 1.0),
+                                        color: Color::new(1.0, 1.0, 1.0, op).into(),
+                                        normal: vec4(0.0, 0.0, 1.0, 0.0),
+                                    },
+                                ],
+                                indices: vec![0, 1, 2, 0, 2, 3],
+                                texture: Some(s_tex.clone()),
+                            };
+                            draw_mesh(&mesh);
+                        } else {
+                            draw_triangle(proj[0].screen, proj[1].screen, proj[2].screen, final_col);
+                            draw_triangle(proj[0].screen, proj[2].screen, proj[3].screen, final_col);
+                        }
                         for i in 0..4 {
                             draw_line(
                                 proj[i].screen.x,
@@ -1973,7 +2288,8 @@ fn draw_composition(
                     }
                 }
                 LayerSource::Image { path } => {
-                    if let Some(tex) = textures.get(path) {
+                    if let Some(base_tex) = textures.get(path) {
+                        let tex = get_processed_image_texture(base_tex, layer, time, plugin_registry);
                         let tw = tex.width();
                         let th = tex.height();
                         let base_col = Color::new(1.0, 1.0, 1.0, op);
@@ -2020,7 +2336,7 @@ fn draw_composition(
                                     },
                                 ],
                                 indices: vec![0, 1, 2, 0, 2, 3],
-                                texture: Some(tex.clone()),
+                                texture: Some(tex),
                             };
                             draw_mesh(&mesh);
                             for i in 0..4 {
@@ -2110,6 +2426,68 @@ fn draw_composition(
                     if proj.visible {
                         let scale_factor = (active_camera.zoom / proj.depth.max(1.0)).clamp(0.05, 10.0);
                         draw_video_placeholder(path, proj.screen.x, proj.screen.y, scale_factor, scale_factor, op);
+                    }
+                }
+                LayerSource::Object3D { color, .. } => {
+                    let s = 100.0;
+                    let base_col = Color::new(color[0], color[1], color[2], color[3] * op);
+                    let final_col = apply_color_effects(base_col, layer, time);
+                    let verts = [
+                        vec3(-s, -s, 0.0),
+                        vec3(s, -s, 0.0),
+                        vec3(s, s, 0.0),
+                        vec3(-s, s, 0.0),
+                    ];
+                    let proj_verts: Vec<ProjectedPoint> = verts
+                        .iter()
+                        .map(|v| {
+                            let w_pos = transform_local_to_world(comp, layer_idx, *v, time);
+                            project_3d_point(w_pos, &active_camera, width, height)
+                        })
+                        .collect();
+                    if proj_verts.iter().all(|p| p.visible) {
+                        draw_triangle(proj_verts[0].screen, proj_verts[1].screen, proj_verts[2].screen, final_col);
+                        draw_triangle(proj_verts[0].screen, proj_verts[2].screen, proj_verts[3].screen, final_col);
+                        for k in 0..4 {
+                            let va = &proj_verts[k];
+                            let vb = &proj_verts[(k + 1) % 4];
+                            draw_line(va.screen.x, va.screen.y, vb.screen.x, vb.screen.y, 1.2, Color::new(1.0, 1.0, 1.0, op * 0.4));
+                        }
+                    }
+                }
+                LayerSource::Adjustment => {
+                    let corners = [
+                        transform_local_to_world(comp, layer_idx, vec3(0.0, 0.0, 0.0), time),
+                        transform_local_to_world(comp, layer_idx, vec3(width, 0.0, 0.0), time),
+                        transform_local_to_world(comp, layer_idx, vec3(width, height, 0.0), time),
+                        transform_local_to_world(comp, layer_idx, vec3(0.0, height, 0.0), time),
+                    ];
+                    let proj = [
+                        project_3d_point(corners[0], &active_camera, width, height),
+                        project_3d_point(corners[1], &active_camera, width, height),
+                        project_3d_point(corners[2], &active_camera, width, height),
+                        project_3d_point(corners[3], &active_camera, width, height),
+                    ];
+                    if proj.iter().all(|p| p.visible) {
+                        for i in 0..4 {
+                            draw_line(
+                                proj[i].screen.x,
+                                proj[i].screen.y,
+                                proj[(i + 1) % 4].screen.x,
+                                proj[(i + 1) % 4].screen.y,
+                                1.5,
+                                Color::new(0.6, 0.3, 1.0, op * 0.5),
+                            );
+                        }
+                    }
+                }
+                LayerSource::Null => {
+                    let origin_world = transform_local_to_world(comp, layer_idx, vec3(0.0, 0.0, 0.0), time);
+                    let proj = project_3d_point(origin_world, &active_camera, width, height);
+                    if proj.visible {
+                        draw_circle_lines(proj.screen.x, proj.screen.y, 8.0, 1.5, Color::from_rgba(255, 60, 60, 220));
+                        draw_line(proj.screen.x - 12.0, proj.screen.y, proj.screen.x + 12.0, proj.screen.y, 1.5, Color::from_rgba(255, 60, 60, 220));
+                        draw_line(proj.screen.x, proj.screen.y - 12.0, proj.screen.x, proj.screen.y + 12.0, 1.5, Color::from_rgba(255, 60, 60, 220));
                     }
                 }
                 _ => {}
@@ -2270,6 +2648,8 @@ fn draw_composition(
                     LayerSource::Solid { color } => {
                         let base_col = Color::new(color[0], color[1], color[2], color[3] * op * b_weight);
                         let final_col = apply_color_effects(base_col, layer, time);
+                        let proc_solid_tex = get_processed_solid_texture(*color, 200, 200, layer, time, plugin_registry);
+
                         if let Some((cx, cy, c_intens)) = chromatic_offsets {
                             let red_col = Color::new(1.0, 0.2, 0.2, final_col.a * 0.5 * c_intens);
                             let cyan_col = Color::new(0.2, 0.8, 1.0, final_col.a * 0.5 * c_intens);
@@ -2296,17 +2676,33 @@ fn draw_composition(
                                 },
                             );
                         }
-                        draw_rectangle_ex(
-                            x + bx,
-                            y + by,
-                            200.0 * sx,
-                            200.0 * sy,
-                            DrawRectangleParams {
-                                offset: vec2(ax / 200.0, ay / 200.0),
-                                rotation: rot.to_radians(),
-                                color: final_col,
-                            },
-                        );
+
+                        if let Some(ref s_tex) = proc_solid_tex {
+                            draw_texture_ex(
+                                s_tex,
+                                x + bx,
+                                y + by,
+                                Color::new(1.0, 1.0, 1.0, op * b_weight),
+                                DrawTextureParams {
+                                    dest_size: Some(vec2(200.0 * sx, 200.0 * sy)),
+                                    rotation: rot.to_radians(),
+                                    pivot: Some(vec2(x + bx + ax, y + by + ay)),
+                                    ..Default::default()
+                                },
+                            );
+                        } else {
+                            draw_rectangle_ex(
+                                x + bx,
+                                y + by,
+                                200.0 * sx,
+                                200.0 * sy,
+                                DrawRectangleParams {
+                                    offset: vec2(ax / 200.0, ay / 200.0),
+                                    rotation: rot.to_radians(),
+                                    color: final_col,
+                                },
+                            );
+                        }
                     }
                     LayerSource::Text {
                         text,
@@ -2325,14 +2721,15 @@ fn draw_composition(
                         draw_text(text, x + bx - ax, y + by - ay, size, text_color);
                     }
                     LayerSource::Image { path } => {
-                        if let Some(tex) = textures.get(path) {
+                        if let Some(base_tex) = textures.get(path) {
+                            let tex = get_processed_image_texture(base_tex, layer, time, plugin_registry);
                             let base_col = Color::new(1.0, 1.0, 1.0, op * b_weight);
                             let final_col = apply_color_effects(base_col, layer, time);
                             if let Some((cx, cy, c_intens)) = chromatic_offsets {
                                 let red_col = Color::new(1.0, 0.3, 0.3, final_col.a * 0.5 * c_intens);
                                 let cyan_col = Color::new(0.3, 0.8, 1.0, final_col.a * 0.5 * c_intens);
                                 draw_texture_ex(
-                                    tex,
+                                    &tex,
                                     x + bx + cx,
                                     y + by + cy,
                                     red_col,
@@ -2344,7 +2741,7 @@ fn draw_composition(
                                     },
                                 );
                                 draw_texture_ex(
-                                    tex,
+                                    &tex,
                                     x + bx - cx,
                                     y + by - cy,
                                     cyan_col,
@@ -2357,7 +2754,7 @@ fn draw_composition(
                                 );
                             }
                             draw_texture_ex(
-                                tex,
+                                &tex,
                                 x + bx,
                                 y + by,
                                 final_col,
@@ -2548,7 +2945,7 @@ fn draw_composition(
         let mut img = target.texture.get_texture_data();
         for eff in &comp.viewport_effects {
             if eff.enabled {
-                crate::plugin::apply_image_builtin_effect(&mut img, eff, time, None);
+                crate::plugin::apply_image_builtin_effect(&mut img, eff, time, plugin_registry);
             }
         }
         target.texture.update(&img);
@@ -2594,6 +2991,7 @@ fn export_video(
     textures: &HashMap<String, Texture2D>,
     render_target: RenderTarget,
     output_path: &Path,
+    plugin_registry: Option<&PluginRegistry>,
 ) -> String {
     let fps = comp.settings.fps.max(1);
     let mut duration = get_max_keyframe_time(comp);
@@ -2652,7 +3050,7 @@ fn export_video(
 
         for frame_idx in 0..frame_count {
             let time = frame_idx as f32 / fps as f32;
-            draw_composition(&export_comp, textures, time, render_target.clone());
+            draw_composition(&export_comp, textures, time, render_target.clone(), plugin_registry);
             let image = render_target.texture.get_texture_data();
             let rgba_data = image.bytes;
 
@@ -3173,7 +3571,7 @@ async fn main() {
         let is_cur_frame_cached = comp.ram_cache_enabled && ram_cache.frames.contains_key(&cur_frame_idx);
 
         if !is_cur_frame_cached {
-            draw_composition(&comp, &textures, comp.current_time, render_target.clone());
+            draw_composition(&comp, &textures, comp.current_time, render_target.clone(), Some(&plugin_registry));
             if comp.ram_cache_enabled {
                 let image = render_target.texture.get_texture_data();
                 ram_cache.insert(cur_frame_idx, &image, comp.cache_compression_enabled, comp.cache_compression_mode);
@@ -3201,7 +3599,7 @@ async fn main() {
                 if !ram_cache.frames.contains_key(&f_idx) {
                     any_missing = true;
                     let f_time = f_idx as f32 / fps;
-                    draw_composition(&comp, &textures, f_time, render_target.clone());
+                    draw_composition(&comp, &textures, f_time, render_target.clone(), Some(&plugin_registry));
                     let image = render_target.texture.get_texture_data();
                     ram_cache.insert(f_idx, &image, comp.cache_compression_enabled, comp.cache_compression_mode);
                     comp.cached_frames.insert(f_idx);
@@ -3519,7 +3917,7 @@ async fn main() {
                             for f_idx in start_frame..=end_frame {
                                 if !ram_cache.frames.contains_key(&f_idx) {
                                     let f_time = f_idx as f32 / fps;
-                                    draw_composition(&comp, &textures, f_time, render_target.clone());
+                                    draw_composition(&comp, &textures, f_time, render_target.clone(), Some(&plugin_registry));
                                     let image = render_target.texture.get_texture_data();
                                     ram_cache.insert(f_idx, &image, comp.cache_compression_enabled, comp.cache_compression_mode);
                                     comp.cached_frames.insert(f_idx);
@@ -4721,7 +5119,7 @@ async fn main() {
                                     for f_idx in start_frame..=end_frame {
                                         if !ram_cache.frames.contains_key(&f_idx) {
                                             let f_time = f_idx as f32 / fps;
-                                            draw_composition(&comp, &textures, f_time, render_target.clone());
+                                            draw_composition(&comp, &textures, f_time, render_target.clone(), Some(&plugin_registry));
                                             let image = render_target.texture.get_texture_data();
                                             ram_cache.insert(f_idx, &image, comp.cache_compression_enabled, comp.cache_compression_mode);
                                             comp.cached_frames.insert(f_idx);
@@ -5459,7 +5857,7 @@ async fn main() {
                         ui.add_space(8.0);
 
                         ui.group(|ui| {
-                            ui.label(egui::RichText::new("🗜 Frame Compression Engine").strong().color(egui::Color32::from_rgb(100, 195, 255)));
+                            ui.label(egui::RichText::new("Frame Compression Engine").strong().color(egui::Color32::from_rgb(100, 195, 255)));
                             ui.add_space(4.0);
                             ui.checkbox(&mut comp.cache_compression_enabled, "Enable Cache Compression")
                                 .on_hover_text("Compress cached frames in RAM to dramatically reduce memory footprint and enable significantly longer real-time playback buffers.");
@@ -5469,20 +5867,32 @@ async fn main() {
                                 ui.label("Compression Mode:");
                                 egui::ComboBox::from_id_salt("cache_compression_mode_dialog_select")
                                     .selected_text(match comp.cache_compression_mode {
-                                        CacheCompressionMode::FastPlanarRle => "🗜 Fast Planar BP-RLE (High Compression)",
-                                        CacheCompressionMode::UltraFastDirect => "⚡ Ultra-Fast 32-bit Run Pack",
+                                        CacheCompressionMode::FastPlanarRle => "Fast Planar BP-RLE (High Compression)",
+                                        CacheCompressionMode::UltraFastDirect => "Ultra-Fast 32-bit Run Pack",
                                         CacheCompressionMode::Uncompressed => "📦 Uncompressed RAW RGBA",
+                                        CacheCompressionMode::UltraFastDirectPlus => "Ultra-Fast 32-bit Run Pack V2 (best)",
+                                        CacheCompressionMode::LZ4 => "LZ4 (best)"
                                     })
                                     .show_ui(ui, |ui| {
                                         ui.selectable_value(
                                             &mut comp.cache_compression_mode,
                                             CacheCompressionMode::FastPlanarRle,
-                                            "🗜 Fast Planar BP-RLE (High Compression, Recommended)",
+                                            "Fast Planar BP-RLE",
                                         );
                                         ui.selectable_value(
                                             &mut comp.cache_compression_mode,
                                             CacheCompressionMode::UltraFastDirect,
-                                            "⚡ Ultra-Fast 32-bit Run Pack (Sub-millisecond)",
+                                            "Ultra-Fast 32-bit Run Pack",
+                                        );
+                                        ui.selectable_value(
+                                            &mut comp.cache_compression_mode,
+                                            CacheCompressionMode::UltraFastDirectPlus,
+                                            "Ultra-Fast 32-bit Run Pack V2",
+                                        );
+                                        ui.selectable_value(
+                                            &mut comp.cache_compression_mode,
+                                            CacheCompressionMode::LZ4,
+                                            "LZ4 (best)",
                                         );
                                         ui.selectable_value(
                                             &mut comp.cache_compression_mode,
@@ -5562,7 +5972,7 @@ async fn main() {
                                 for f_idx in start_frame..=end_frame {
                                     if !ram_cache.frames.contains_key(&f_idx) {
                                         let f_time = f_idx as f32 / fps;
-                                        draw_composition(&comp, &textures, f_time, render_target.clone());
+                                        draw_composition(&comp, &textures, f_time, render_target.clone(), Some(&plugin_registry));
                                         let image = render_target.texture.get_texture_data();
                                         ram_cache.insert(f_idx, &image, comp.cache_compression_enabled, comp.cache_compression_mode);
                                         comp.cached_frames.insert(f_idx);
@@ -5576,7 +5986,7 @@ async fn main() {
                                 for f_idx in start_frame..=end_frame {
                                     if !ram_cache.frames.contains_key(&f_idx) {
                                         let f_time = f_idx as f32 / fps;
-                                        draw_composition(&comp, &textures, f_time, render_target.clone());
+                                        draw_composition(&comp, &textures, f_time, render_target.clone(), Some(&plugin_registry));
                                         let image = render_target.texture.get_texture_data();
                                         ram_cache.insert(f_idx, &image, comp.cache_compression_enabled, comp.cache_compression_mode);
                                         comp.cached_frames.insert(f_idx);
@@ -5594,7 +6004,7 @@ async fn main() {
         });
 
         if let Some(path) = pending_export.take() {
-            export_status = export_video(&comp, &textures, render_target.clone(), &path);
+            export_status = export_video(&comp, &textures, render_target.clone(), &path, Some(&plugin_registry));
         }
 
         // --- 3. FINAL COMPOSITE VIEWPORT RENDERING ---

@@ -15,8 +15,8 @@ set INCLUDE=C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\ucrt;C:\
 set LIB=C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\ucrt\x64;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\um\x64;C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Tools\MSVC\14.50.35717\lib\x64;%LIB%
 
 ::cargo clean
-cargo build
+cargo build --release
 
 if %errorlevel% LEQ 0 (
-robocopy ./target/debug/ ./ "beforefx.exe"
+robocopy ./target/release/ ./ "beforefx.exe"
 )

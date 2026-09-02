@@ -483,7 +483,9 @@ impl Default for ViewportMode {
 pub enum CacheCompressionMode {
     FastPlanarRle,
     UltraFastDirect,
+    UltraFastDirectPlus,
     Uncompressed,
+    LZ4,
 }
 
 impl Default for CacheCompressionMode {
