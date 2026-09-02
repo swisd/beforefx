@@ -3008,29 +3008,44 @@ fn export_video(
         return format!("FFmpeg initialization failed: {}", e);
     }
 
-    // Assemble video using playa-ffmpeg crate
+    // Assemble video inside an MKV container
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
         let mut out_ctx = ffmpeg::format::output(&output_path)?;
-        let mut stream =
-            out_ctx.add_stream(ffmpeg::codec::encoder::find(ffmpeg::codec::Id::H264))?;
-        let codec_ctx = ffmpeg::codec::context::Context::from_parameters(stream.parameters())?;
-        let mut encoder = codec_ctx.encoder().video()?;
 
-        encoder.set_width(width);
-        encoder.set_height(height);
-        encoder.set_format(Pixel::YUV420P);
-        encoder.set_time_base((1, fps as i32));
+        let stream_index;
+        let mut encoder;
 
-        let mut encoder = encoder.open_as_with(
-            ffmpeg::codec::encoder::find(ffmpeg::codec::Id::H264),
-            dict! {
-                "preset" => "ultrafast",
-                "tune" => "zerolatency",
-            },
-        )?;
-        stream.set_parameters(&encoder);
+        // Scope the stream configuration to satisfy the Rust borrow checker
+        {
+            let mut stream = out_ctx.add_stream(ffmpeg::codec::encoder::find(ffmpeg::codec::Id::H264))?;
+            stream_index = stream.index();
+
+            let codec = ffmpeg::codec::encoder::find(ffmpeg::codec::Id::H264)
+                .ok_or_else(|| "H264 encoder not found")?;
+            let codec_ctx = ffmpeg::codec::context::Context::new_with_codec(codec);
+            let mut video_encoder = codec_ctx.encoder().video()?;
+
+            video_encoder.set_width(width);
+            video_encoder.set_height(height);
+            video_encoder.set_format(Pixel::YUV420P);
+            video_encoder.set_time_base(ffmpeg::Rational(1, fps as i32));
+
+            // Force global headers and high profile explicitly to prevent MKV container downgrades
+            encoder = video_encoder.open_as_with(
+                codec,
+                dict! {
+                    "preset" => "ultrafast",
+                    "profile" => "high",
+                    "flags" => "+global_header",
+                },
+            )?;
+
+            stream.set_parameters(&encoder);
+        }
 
         out_ctx.write_header()?;
+
+        let mkv_stream_time_base = ffmpeg::Rational(1, 1000);
 
         let mut scaler = ScalerContext::get(
             Pixel::RGBA,
@@ -3042,7 +3057,9 @@ fn export_video(
             Flags::BILINEAR,
         )?;
 
-        let mut video_frame = Video::empty();
+        // FIX: Explicitly assign structural parameters to the destination frame
+        // instead of leaving it unallocated as Video::empty()
+        let mut video_frame = Video::new(Pixel::YUV420P, width, height);
         let mut packet = ffmpeg::codec::packet::Packet::empty();
 
         let mut export_comp = comp.clone();
@@ -3050,27 +3067,43 @@ fn export_video(
 
         for frame_idx in 0..frame_count {
             let time = frame_idx as f32 / fps as f32;
+            println!("drawing frame {} @ {}", frame_idx, time);
             draw_composition(&export_comp, textures, time, render_target.clone(), plugin_registry);
             let image = render_target.texture.get_texture_data();
             let rgba_data = image.bytes;
 
             let mut input_frame = Video::new(Pixel::RGBA, width, height);
-            input_frame.data_mut(0).copy_from_slice(&rgba_data);
+
+            let row_stride = (width * 4) as usize;
+            for row in 0..height as usize {
+                let src_offset = row * row_stride;
+                let dest_offset = ((height as usize - 1) - row) * row_stride;
+
+                input_frame.data_mut(0)[dest_offset..dest_offset + row_stride]
+                    .copy_from_slice(&rgba_data[src_offset..src_offset + row_stride]);
+            }
 
             scaler.run(&input_frame, &mut video_frame)?;
             video_frame.set_pts(Some(frame_idx as i64));
 
             encoder.send_frame(&video_frame)?;
             while encoder.receive_packet(&mut packet).is_ok() {
-                packet.set_stream(0);
+                packet.set_stream(stream_index);
+                packet.rescale_ts(encoder.time_base(), mkv_stream_time_base);
                 packet.write_interleaved(&mut out_ctx)?;
             }
         }
 
         encoder.send_eof()?;
-        while encoder.receive_packet(&mut packet).is_ok() {
-            packet.set_stream(0);
-            packet.write_interleaved(&mut out_ctx)?;
+        loop {
+            match encoder.receive_packet(&mut packet) {
+                Ok(_) => {
+                    packet.set_stream(stream_index);
+                    packet.rescale_ts(encoder.time_base(), mkv_stream_time_base);
+                    packet.write_interleaved(&mut out_ctx)?;
+                }
+                Err(_) => break,
+            }
         }
 
         out_ctx.write_trailer()?;
@@ -3079,9 +3112,14 @@ fn export_video(
 
     match result {
         Ok(_) => format!("Exported {} successfully", output_path.display()),
-        Err(e) => format!("Failed to export video: {}", e),
+        Err(e) => {
+            // Log the literal wrapper error to the terminal if it hits a snag
+            eprintln!("Export error encountered: {:?}", e);
+            format!("Failed to export video: {}", e)
+        }
     }
 }
+
 
 #[macroquad::main("BeforeFX - Professional Motion Graphics")]
 async fn main() {
@@ -3097,7 +3135,7 @@ async fn main() {
             default_layer(
                 "Title Text".into(),
                 LayerSource::Text {
-                    text: "BEFORE EFFECTS".to_string(),
+                    text: "BEFOREFX".to_string(),
                     font_size: 64.0,
                     color: [1.0, 0.85, 0.25, 1.0],
                 },
@@ -3708,7 +3746,7 @@ async fn main() {
                             }
                             if ui.button("Video Footage...").clicked() {
                                 if let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("Video", &["mp4", "mov", "avi"])
+                                    .add_filter("Video", &["mkv"])
                                     .pick_file()
                                 {
                                     let p_str = path.to_string_lossy().to_string();
@@ -3734,10 +3772,10 @@ async fn main() {
                             }
                             ui.close_menu();
                         }
-                        if ui.button("🎬 Export Video (MP4)...").clicked() {
+                        if ui.button("Export Video (MKV)...").clicked() {
                             if let Some(path) = rfd::FileDialog::new()
-                                .add_filter("MP4 Video", &["mp4"])
-                                .set_file_name("render_output.mp4")
+                                .add_filter("Matroska Video", &["mkv"])
+                                .set_file_name("render_output.mkv")
                                 .save_file()
                             {
                                 pending_export = Some(path);
