@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use egui_macroquad::egui::{Color32, RichText};
 use lz4_flex::block;
+use macroquad::miniquad::RawId;
 
 fn resource_icon(kind: ResourceKind) -> &'static str {
     match kind {
@@ -1876,6 +1877,7 @@ fn draw_composition(
     let width = comp.settings.width as f32;
     let height = comp.settings.height as f32;
 
+    // 1. Initialize viewport render target and clear background first
     set_camera(&Camera2D {
         render_target: Some(target.clone()),
         ..Camera2D::from_display_rect(Rect::new(0., 0., width, height))
@@ -1885,7 +1887,7 @@ fn draw_composition(
     let active_camera = get_viewport_camera(comp, time);
     let has_solo = comp.layers.iter().any(|l| l.solo);
 
-    // 3D Perspective Ground Grid (in non-ActiveCamera views or when grid is enabled)
+    // 2. Render viewport grid and guides before any composition layers
     if comp.viewport_mode != ViewportMode::ActiveCamera || comp.show_grid {
         let grid_y = comp.settings.height as f32 / 2.0;
         let step = 200.0;
@@ -1927,6 +1929,7 @@ fn draw_composition(
         }
     }
 
+    // 3. Render composition layers sequentially from bottom to top
     for (layer_idx, layer) in comp.layers.iter().enumerate() {
         if !layer.visible {
             continue;
@@ -1934,7 +1937,6 @@ fn draw_composition(
         if has_solo && !layer.solo {
             continue;
         }
-        // In/Out Trimming check
         if time < layer.in_time || time > layer.out_time {
             continue;
         }
@@ -3653,6 +3655,975 @@ async fn main() {
             }
         }
         clear_background(Color::from_rgba(18, 18, 20, 255));
+
+        /*if viewport_rect.width() > 10.0 && viewport_rect.height() > 10.0 {
+            let target_aspect = comp.settings.width as f32 / comp.settings.height as f32;
+            let viewport_aspect = viewport_rect.width() / viewport_rect.height();
+
+            let (draw_w, draw_h) = if viewport_aspect > target_aspect {
+                (
+                    viewport_rect.height() * target_aspect,
+                    viewport_rect.height(),
+                )
+            } else {
+                (viewport_rect.width(), viewport_rect.width() / target_aspect)
+            };
+
+            let ppp = comp.settings.ui_scale;
+            let draw_x = viewport_rect.min.x + (viewport_rect.width() - draw_w) / 2.0;
+            let draw_y = viewport_rect.min.y + (viewport_rect.height() - draw_h) / 2.0;
+
+            let screen_x = draw_x * ppp;
+            let screen_y = draw_y * ppp;
+            let screen_w = draw_w * ppp;
+            let screen_h = draw_h * ppp;
+
+            // Checkerboard pattern behind transparent elements
+            if comp.show_checkerboard {
+                let cell_size = 16.0;
+                let cols = (screen_w / cell_size).ceil() as i32;
+                let rows = (screen_h / cell_size).ceil() as i32;
+                for c in 0..cols {
+                    for r in 0..rows {
+                        let col_color = if (c + r) % 2 == 0 {
+                            Color::from_rgba(30, 30, 34, 255)
+                        } else {
+                            Color::from_rgba(40, 40, 45, 255)
+                        };
+                        draw_rectangle(
+                            screen_x + c as f32 * cell_size,
+                            screen_y + r as f32 * cell_size,
+                            cell_size,
+                            cell_size,
+                            col_color,
+                        );
+                    }
+                }
+            }
+
+            // Draw composition render (instant cache retrieval if cached)
+            let tex_to_draw = if is_cur_frame_cached {
+                ram_cache.get(cur_frame_idx).unwrap_or(&render_target.texture)
+            } else {
+                &render_target.texture
+            };
+
+            draw_texture_ex(
+                tex_to_draw,
+                screen_x,
+                screen_y,
+                WHITE,
+                DrawTextureParams {
+                    dest_size: Some(vec2(screen_w, screen_h)),
+                    flip_y: true,
+                    ..Default::default()
+                },
+            );
+
+            // Composition Border
+            draw_rectangle_lines(
+                screen_x,
+                screen_y,
+                screen_w,
+                screen_h,
+                1.5,
+                Color::from_rgba(55, 55, 62, 255),
+            );
+
+            // Real-time Playback / RAM Preview Status HUD Badge
+            if comp.is_playing {
+                let badge_bg = if comp.is_ram_previewing {
+                    Color::from_rgba(25, 85, 40, 220)
+                } else if is_cur_frame_cached {
+                    Color::from_rgba(30, 70, 40, 200)
+                } else {
+                    Color::from_rgba(45, 45, 50, 190)
+                };
+                let badge_text = if comp.is_ram_previewing {
+                    format!("⚡ RAM PREVIEW • {:.1} FPS", comp.playback_fps)
+                } else if is_cur_frame_cached {
+                    format!("⚡ CACHED • {:.1} FPS", comp.playback_fps)
+                } else {
+                    format!("▶ PLAYING • {:.1} FPS", comp.playback_fps)
+                };
+                draw_rectangle(screen_x + 12.0, screen_y + screen_h - 32.0, 195.0, 20.0, badge_bg);
+                draw_rectangle_lines(screen_x + 12.0, screen_y + screen_h - 32.0, 195.0, 20.0, 1.0, Color::from_rgba(60, 220, 110, 180));
+                draw_text(&badge_text, screen_x + 18.0, screen_y + screen_h - 18.0, 13.0, Color::from_rgba(235, 255, 235, 255));
+            }
+
+            // Title & Action Safe Guides
+            if comp.show_guides {
+                // Action safe (90%)
+                let as_w = screen_w * 0.9;
+                let as_h = screen_h * 0.9;
+                let as_x = screen_x + (screen_w - as_w) / 2.0;
+                let as_y = screen_y + (screen_h - as_h) / 2.0;
+                draw_rectangle_lines(
+                    as_x,
+                    as_y,
+                    as_w,
+                    as_h,
+                    1.0,
+                    Color::from_rgba(60, 140, 200, 100),
+                );
+
+                // Title safe (80%)
+                let ts_w = screen_w * 0.8;
+                let ts_h = screen_h * 0.8;
+                let ts_x = screen_x + (screen_w - ts_w) / 2.0;
+                let ts_y = screen_y + (screen_h - ts_h) / 2.0;
+                draw_rectangle_lines(
+                    ts_x,
+                    ts_y,
+                    ts_w,
+                    ts_h,
+                    1.0,
+                    Color::from_rgba(60, 140, 200, 100),
+                );
+
+                // Center crosshair
+                let cx = screen_x + screen_w / 2.0;
+                let cy = screen_y + screen_h / 2.0;
+                draw_line(
+                    cx - 10.0,
+                    cy,
+                    cx + 10.0,
+                    cy,
+                    1.0,
+                    Color::from_rgba(60, 140, 200, 120),
+                );
+                draw_line(
+                    cx,
+                    cy - 10.0,
+                    cx,
+                    cy + 10.0,
+                    1.0,
+                    Color::from_rgba(60, 140, 200, 120),
+                );
+            }
+
+            // Grid Overlay
+            if comp.show_grid {
+                for i in 1..10 {
+                    let gx = screen_x + (screen_w / 10.0) * i as f32;
+                    let gy = screen_y + (screen_h / 10.0) * i as f32;
+                    draw_line(
+                        gx,
+                        screen_y,
+                        gx,
+                        screen_y + screen_h,
+                        0.5,
+                        Color::from_rgba(80, 80, 90, 80),
+                    );
+                    draw_line(
+                        screen_x,
+                        gy,
+                        screen_x + screen_w,
+                        gy,
+                        0.5,
+                        Color::from_rgba(80, 80, 90, 80),
+                    );
+                }
+            }
+
+            let comp_w = comp.settings.width as f32;
+            let comp_h = comp.settings.height as f32;
+            let to_screen = |p: Vec2| -> Vec2 {
+                vec2(screen_x + (p.x / comp_w) * screen_w, screen_y + (p.y / comp_h) * screen_h)
+            };
+            let to_comp = |p: Vec2| -> Vec2 {
+                vec2((p.x - screen_x) / screen_w * comp_w, (p.y - screen_y) / screen_h * comp_h)
+            };
+
+            let (m_raw_x, m_raw_y) = mouse_position();
+            let mouse_pos = vec2(m_raw_x, m_raw_y);
+            let in_viewport = mouse_pos.x >= screen_x && mouse_pos.x <= screen_x + screen_w
+                && mouse_pos.y >= screen_y && mouse_pos.y <= screen_y + screen_h;
+            let comp_mouse = to_comp(mouse_pos);
+
+            let mouse_down = is_mouse_button_down(MouseButton::Left);
+            let mouse_pressed = is_mouse_button_pressed(MouseButton::Left);
+            let mouse_released = is_mouse_button_released(MouseButton::Left);
+            let mid_down = is_mouse_button_down(MouseButton::Middle);
+            let mid_pressed = is_mouse_button_pressed(MouseButton::Middle);
+            let right_down = is_mouse_button_down(MouseButton::Right);
+            let right_pressed = is_mouse_button_pressed(MouseButton::Right);
+            let alt_down = is_key_down(KeyCode::LeftAlt) || is_key_down(KeyCode::RightAlt);
+            let shift_down = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
+            let space_down = is_key_down(KeyCode::Space);
+            let mouse_wheel = mouse_wheel().1;
+
+            if mouse_wheel.abs() > 0.001 && in_viewport {
+                if comp.viewport_mode == ViewportMode::CustomView {
+                    comp.custom_orbit_distance = (comp.custom_orbit_distance * (1.0 - mouse_wheel * 0.08)).clamp(100.0, 30000.0);
+                } else if comp.viewport_mode == ViewportMode::ActiveCamera {
+                    if let Some(act) = comp.active_layer_index {
+                        if act < comp.layers.len() && comp.layers[act].source == LayerSource::Camera {
+                            let cur_zoom = comp.layers[act].properties.get("zoom").map_or(1500.0, |p| p.get_value_at(comp.current_time));
+                            let new_zoom = (cur_zoom * (1.0 + mouse_wheel * 0.05)).clamp(100.0, 20000.0);
+                            update_layer_property_val(&mut comp.layers[act], "zoom", new_zoom, comp.current_time);
+                        }
+                    }
+                }
+            }
+
+            let viewport_cam = get_viewport_camera(&comp, comp.current_time);
+            let mut hovered_handle = GizmoHandle::None;
+
+            // Hover Outline on non-active layer under cursor
+            let hovered_layer_idx = if in_viewport && gizmo_drag == GizmoHandle::None {
+                hit_test_layers(&comp, &textures, comp_mouse, comp.current_time)
+            } else {
+                None
+            };
+
+            if let Some(h_idx) = hovered_layer_idx {
+                if comp.active_layer_index != Some(h_idx) && h_idx < comp.layers.len() {
+                    let h_layer = &comp.layers[h_idx];
+                    if !h_layer.d3 {
+                        let (_, tl, tr, br, bl) = get_layer_2d_bounds(&comp, h_idx, &textures, comp.current_time);
+                        let s_tl = to_screen(tl);
+                        let s_tr = to_screen(tr);
+                        let s_br = to_screen(br);
+                        let s_bl = to_screen(bl);
+                        let h_col = Color::from_rgba(100, 200, 255, 120);
+                        draw_line(s_tl.x, s_tl.y, s_tr.x, s_tr.y, 1.0, h_col);
+                        draw_line(s_tr.x, s_tr.y, s_br.x, s_br.y, 1.0, h_col);
+                        draw_line(s_br.x, s_br.y, s_bl.x, s_bl.y, 1.0, h_col);
+                        draw_line(s_bl.x, s_bl.y, s_tl.x, s_tl.y, 1.0, h_col);
+                        draw_text(&h_layer.name, s_tl.x + 4.0, s_tl.y - 4.0, 11.0, Color::from_rgba(180, 230, 255, 200));
+                    }
+                }
+            }
+
+            // Active layer transform bounding box & interactive gizmos in Viewport
+            if let Some(active_idx) = comp.active_layer_index {
+                if active_idx < comp.layers.len() {
+                    let layer = &comp.layers[active_idx];
+                    let is_3d_layer = layer.d3 || layer.source == LayerSource::Camera;
+                    let time = comp.current_time;
+
+                    if is_3d_layer {
+                        // 3D Layer Bounding Box / Perspective Quad
+                        let layer_corners = match &layer.source {
+                            LayerSource::Solid { .. } => vec![
+                                transform_local_to_world(&comp, active_idx, vec3(0.0, 0.0, 0.0), time),
+                                transform_local_to_world(&comp, active_idx, vec3(200.0, 0.0, 0.0), time),
+                                transform_local_to_world(&comp, active_idx, vec3(200.0, 200.0, 0.0), time),
+                                transform_local_to_world(&comp, active_idx, vec3(0.0, 200.0, 0.0), time),
+                            ],
+                            LayerSource::Image { path } => {
+                                let (tw, th) = textures.get(path).map_or((200.0, 200.0), |tex| (tex.width(), tex.height()));
+                                vec![
+                                    transform_local_to_world(&comp, active_idx, vec3(0.0, 0.0, 0.0), time),
+                                    transform_local_to_world(&comp, active_idx, vec3(tw, 0.0, 0.0), time),
+                                    transform_local_to_world(&comp, active_idx, vec3(tw, th, 0.0), time),
+                                    transform_local_to_world(&comp, active_idx, vec3(0.0, th, 0.0), time),
+                                ]
+                            }
+                            _ => vec![
+                                transform_local_to_world(&comp, active_idx, vec3(-100.0, -100.0, 0.0), time),
+                                transform_local_to_world(&comp, active_idx, vec3(100.0, -100.0, 0.0), time),
+                                transform_local_to_world(&comp, active_idx, vec3(100.0, 100.0, 0.0), time),
+                                transform_local_to_world(&comp, active_idx, vec3(-100.0, 100.0, 0.0), time),
+                            ],
+                        };
+
+                        let proj_corners: Vec<_> = layer_corners.iter()
+                            .map(|&c| project_3d_point(c, &viewport_cam, comp_w, comp_h))
+                            .collect();
+
+                        if proj_corners.iter().all(|p| p.visible) {
+                            let s_corners: Vec<_> = proj_corners.iter().map(|p| to_screen(p.screen)).collect();
+                            for i in 0..4 {
+                                draw_line(
+                                    s_corners[i].x, s_corners[i].y,
+                                    s_corners[(i + 1) % 4].x, s_corners[(i + 1) % 4].y,
+                                    1.2, Color::from_rgba(70, 160, 255, 180),
+                                );
+                                draw_rectangle(
+                                    s_corners[i].x - 3.5, s_corners[i].y - 3.5,
+                                    7.0, 7.0, Color::from_rgba(255, 255, 255, 220),
+                                );
+                            }
+                        }
+
+                        // 3D Anchor / Origin Position
+                        let ax = layer.properties.get("anchorX").map_or(0.0, |p| p.get_value_at(time));
+                        let ay = layer.properties.get("anchorY").map_or(0.0, |p| p.get_value_at(time));
+                        let az = layer.properties.get("anchorZ").map_or(0.0, |p| p.get_value_at(time));
+                        let origin_world = transform_local_to_world(&comp, active_idx, vec3(ax, ay, az), time);
+                        let p_origin = project_3d_point(origin_world, &viewport_cam, comp_w, comp_h);
+
+                        if p_origin.visible {
+                            let origin_s = to_screen(p_origin.screen);
+                            let gizmo_len = 110.0;
+
+                            // Axis Tips in World Space
+                            let tip_x_world = origin_world + vec3(gizmo_len, 0.0, 0.0);
+                            let tip_y_world = origin_world + vec3(0.0, gizmo_len, 0.0);
+                            let tip_z_world = origin_world + vec3(0.0, 0.0, gizmo_len);
+
+                            let p_tip_x = project_3d_point(tip_x_world, &viewport_cam, comp_w, comp_h);
+                            let p_tip_y = project_3d_point(tip_y_world, &viewport_cam, comp_w, comp_h);
+                            let p_tip_z = project_3d_point(tip_z_world, &viewport_cam, comp_w, comp_h);
+
+                            let tip_s_x = to_screen(p_tip_x.screen);
+                            let tip_s_y = to_screen(p_tip_y.screen);
+                            let tip_s_z = to_screen(p_tip_z.screen);
+
+                            // 3D Rotation Rings
+                            let radius = 80.0;
+                            let mut ring_x_pts = vec![];
+                            let mut ring_y_pts = vec![];
+                            let mut ring_z_pts = vec![];
+
+                            for step in 0..=36 {
+                                let a = (step as f32 / 36.0) * std::f32::consts::TAU;
+                                let pt_x = origin_world + vec3(0.0, radius * a.cos(), radius * a.sin());
+                                let pt_y = origin_world + vec3(radius * a.cos(), 0.0, radius * a.sin());
+                                let pt_z = origin_world + vec3(radius * a.cos(), radius * a.sin(), 0.0);
+
+                                let pr_x = project_3d_point(pt_x, &viewport_cam, comp_w, comp_h);
+                                let pr_y = project_3d_point(pt_y, &viewport_cam, comp_w, comp_h);
+                                let pr_z = project_3d_point(pt_z, &viewport_cam, comp_w, comp_h);
+
+                                if pr_x.visible { ring_x_pts.push(to_screen(pr_x.screen)); }
+                                if pr_y.visible { ring_y_pts.push(to_screen(pr_y.screen)); }
+                                if pr_z.visible { ring_z_pts.push(to_screen(pr_z.screen)); }
+                            }
+
+                            // Hit testing 3D Handles
+                            if in_viewport {
+                                if (mouse_pos - origin_s).length() < 12.0 {
+                                    hovered_handle = GizmoHandle::CenterAnchor;
+                                } else if dist_to_segment_2d(mouse_pos, origin_s, tip_s_x) < 9.0 || (mouse_pos - tip_s_x).length() < 12.0 {
+                                    hovered_handle = GizmoHandle::TranslateX;
+                                } else if dist_to_segment_2d(mouse_pos, origin_s, tip_s_y) < 9.0 || (mouse_pos - tip_s_y).length() < 12.0 {
+                                    hovered_handle = GizmoHandle::TranslateY;
+                                } else if dist_to_segment_2d(mouse_pos, origin_s, tip_s_z) < 9.0 || (mouse_pos - tip_s_z).length() < 12.0 {
+                                    hovered_handle = GizmoHandle::TranslateZ;
+                                } else if comp.active_tool == 3 {
+                                    let mut near_rx = false;
+                                    for i in 0..ring_x_pts.len().saturating_sub(1) {
+                                        if dist_to_segment_2d(mouse_pos, ring_x_pts[i], ring_x_pts[i + 1]) < 8.0 {
+                                            near_rx = true; break;
+                                        }
+                                    }
+                                    let mut near_ry = false;
+                                    for i in 0..ring_y_pts.len().saturating_sub(1) {
+                                        if dist_to_segment_2d(mouse_pos, ring_y_pts[i], ring_y_pts[i + 1]) < 8.0 {
+                                            near_ry = true; break;
+                                        }
+                                    }
+                                    let mut near_rz = false;
+                                    for i in 0..ring_z_pts.len().saturating_sub(1) {
+                                        if dist_to_segment_2d(mouse_pos, ring_z_pts[i], ring_z_pts[i + 1]) < 8.0 {
+                                            near_rz = true; break;
+                                        }
+                                    }
+                                    if near_rx { hovered_handle = GizmoHandle::RotateX; }
+                                    else if near_ry { hovered_handle = GizmoHandle::RotateY; }
+                                    else if near_rz { hovered_handle = GizmoHandle::RotateZ; }
+                                }
+                            }
+
+                            // Draw 3D Rotation Rings (when rotation tool is selected)
+                            if comp.active_tool == 3 {
+                                let rx_col = if hovered_handle == GizmoHandle::RotateX || gizmo_drag == GizmoHandle::RotateX {
+                                    Color::from_rgba(255, 100, 100, 255)
+                                } else {
+                                    Color::from_rgba(230, 60, 60, 180)
+                                };
+                                for i in 0..ring_x_pts.len().saturating_sub(1) {
+                                    draw_line(ring_x_pts[i].x, ring_x_pts[i].y, ring_x_pts[i + 1].x, ring_x_pts[i + 1].y, 2.0, rx_col);
+                                }
+
+                                let ry_col = if hovered_handle == GizmoHandle::RotateY || gizmo_drag == GizmoHandle::RotateY {
+                                    Color::from_rgba(100, 255, 120, 255)
+                                } else {
+                                    Color::from_rgba(60, 220, 80, 180)
+                                };
+                                for i in 0..ring_y_pts.len().saturating_sub(1) {
+                                    draw_line(ring_y_pts[i].x, ring_y_pts[i].y, ring_y_pts[i + 1].x, ring_y_pts[i + 1].y, 2.0, ry_col);
+                                }
+
+                                let rz_col = if hovered_handle == GizmoHandle::RotateZ || gizmo_drag == GizmoHandle::RotateZ {
+                                    Color::from_rgba(120, 180, 255, 255)
+                                } else {
+                                    Color::from_rgba(60, 140, 255, 180)
+                                };
+                                for i in 0..ring_z_pts.len().saturating_sub(1) {
+                                    draw_line(ring_z_pts[i].x, ring_z_pts[i].y, ring_z_pts[i + 1].x, ring_z_pts[i + 1].y, 2.0, rz_col);
+                                }
+                            }
+
+                            // Draw Translation Gizmo (X=Red, Y=Green, Z=Blue)
+                            let x_active = hovered_handle == GizmoHandle::TranslateX || gizmo_drag == GizmoHandle::TranslateX;
+                            let x_col = if x_active { Color::from_rgba(255, 100, 100, 255) } else { Color::from_rgba(235, 50, 50, 220) };
+                            draw_line(origin_s.x, origin_s.y, tip_s_x.x, tip_s_x.y, if x_active { 3.0 } else { 2.0 }, x_col);
+                            draw_circle(tip_s_x.x, tip_s_x.y, if x_active { 5.0 } else { 4.0 }, x_col);
+                            draw_text("X", tip_s_x.x + 6.0, tip_s_x.y + 4.0, 13.0, x_col);
+
+                            let y_active = hovered_handle == GizmoHandle::TranslateY || gizmo_drag == GizmoHandle::TranslateY;
+                            let y_col = if y_active { Color::from_rgba(100, 255, 120, 255) } else { Color::from_rgba(50, 220, 80, 220) };
+                            draw_line(origin_s.x, origin_s.y, tip_s_y.x, tip_s_y.y, if y_active { 3.0 } else { 2.0 }, y_col);
+                            draw_circle(tip_s_y.x, tip_s_y.y, if y_active { 5.0 } else { 4.0 }, y_col);
+                            draw_text("Y", tip_s_y.x + 6.0, tip_s_y.y + 4.0, 13.0, y_col);
+
+                            let z_active = hovered_handle == GizmoHandle::TranslateZ || gizmo_drag == GizmoHandle::TranslateZ;
+                            let z_col = if z_active { Color::from_rgba(120, 180, 255, 255) } else { Color::from_rgba(50, 130, 255, 220) };
+                            draw_line(origin_s.x, origin_s.y, tip_s_z.x, tip_s_z.y, if z_active { 3.0 } else { 2.0 }, z_col);
+                            draw_circle(tip_s_z.x, tip_s_z.y, if z_active { 5.0 } else { 4.0 }, z_col);
+                            draw_text("Z", tip_s_z.x + 6.0, tip_s_z.y + 4.0, 13.0, z_col);
+
+                            let center_active = hovered_handle == GizmoHandle::CenterAnchor || gizmo_drag == GizmoHandle::CenterAnchor;
+                            let center_col = if center_active { Color::from_rgba(255, 230, 80, 255) } else { Color::from_rgba(255, 200, 50, 200) };
+                            draw_circle(origin_s.x, origin_s.y, 4.0, center_col);
+                            draw_circle_lines(origin_s.x, origin_s.y, 7.0, 1.0, center_col);
+                        }
+                    } else {
+                        // 2D LAYER INTERACTIVE BOUNDING BOX & 8-POINT TRANSFORM GIZMOS
+                        let (anchor_pos, tl, tr, br, bl) = get_layer_2d_bounds(&comp, active_idx, &textures, comp.current_time);
+                        let s_tl = to_screen(tl);
+                        let s_tr = to_screen(tr);
+                        let s_br = to_screen(br);
+                        let s_bl = to_screen(bl);
+                        let s_anchor = to_screen(anchor_pos);
+
+                        let s_tc = (s_tl + s_tr) * 0.5;
+                        let s_bc = (s_bl + s_br) * 0.5;
+                        let s_lc = (s_tl + s_bl) * 0.5;
+                        let s_rc = (s_tr + s_br) * 0.5;
+
+                        // Top rotation handle stem & knob
+                        let rot_dir = if (s_tc - s_bc).length() > 0.1 { (s_tc - s_bc).normalize() } else { vec2(0.0, -1.0) };
+                        let s_rot = s_tc + rot_dir * 24.0;
+
+                        // Bounding Box Rect Lines
+                        let box_col = Color::from_rgba(70, 160, 255, 220);
+                        draw_line(s_tl.x, s_tl.y, s_tr.x, s_tr.y, 1.5, box_col);
+                        draw_line(s_tr.x, s_tr.y, s_br.x, s_br.y, 1.5, box_col);
+                        draw_line(s_br.x, s_br.y, s_bl.x, s_bl.y, 1.5, box_col);
+                        draw_line(s_bl.x, s_bl.y, s_tl.x, s_tl.y, 1.5, box_col);
+
+                        // Rotation handle stem
+                        draw_line(s_tc.x, s_tc.y, s_rot.x, s_rot.y, 1.2, Color::from_rgba(100, 200, 255, 180));
+                        draw_circle(s_rot.x, s_rot.y, 4.5, Color::from_rgba(255, 255, 255, 240));
+                        draw_circle_lines(s_rot.x, s_rot.y, 4.5, 1.5, Color::from_rgba(40, 120, 240, 255));
+
+                        // 8 Square Resize Handles (4 corners + 4 edge centers)
+                        let handle_pts = [
+                            (s_tl, GizmoHandle::ScaleTL),
+                            (s_tr, GizmoHandle::ScaleTR),
+                            (s_br, GizmoHandle::ScaleBR),
+                            (s_bl, GizmoHandle::ScaleBL),
+                            (s_tc, GizmoHandle::ScaleT),
+                            (s_bc, GizmoHandle::ScaleB),
+                            (s_lc, GizmoHandle::ScaleL),
+                            (s_rc, GizmoHandle::ScaleR),
+                        ];
+
+                        for (pt, _) in &handle_pts {
+                            draw_rectangle(pt.x - 3.5, pt.y - 3.5, 7.0, 7.0, Color::from_rgba(255, 255, 255, 250));
+                            draw_rectangle_lines(pt.x - 3.5, pt.y - 3.5, 7.0, 7.0, 1.2, Color::from_rgba(30, 100, 220, 255));
+                        }
+
+                        // Anchor Point with Crosshair
+                        let anchor_col = Color::from_rgba(255, 215, 60, 240);
+                        draw_circle(s_anchor.x, s_anchor.y, 3.0, anchor_col);
+                        draw_circle_lines(s_anchor.x, s_anchor.y, 7.0, 1.2, anchor_col);
+                        draw_line(s_anchor.x - 10.0, s_anchor.y, s_anchor.x + 10.0, s_anchor.y, 1.0, anchor_col);
+                        draw_line(s_anchor.x, s_anchor.y - 10.0, s_anchor.x, s_anchor.y + 10.0, 1.0, anchor_col);
+
+                        // 2D Handle Hit Testing
+                        if in_viewport && gizmo_drag == GizmoHandle::None {
+                            if (mouse_pos - s_rot).length() < 9.0 {
+                                hovered_handle = GizmoHandle::Rotate2D;
+                            } else if (mouse_pos - s_anchor).length() < 9.0 {
+                                hovered_handle = if comp.active_tool == 5 { GizmoHandle::PanBehindAnchor } else { GizmoHandle::CenterAnchor };
+                            } else {
+                                for (pt, handle) in &handle_pts {
+                                    if (mouse_pos - *pt).length() < 8.0 {
+                                        hovered_handle = *handle;
+                                        break;
+                                    }
+                                }
+                                if hovered_handle == GizmoHandle::None {
+                                    if point_in_triangle(mouse_pos, s_tl, s_tr, s_br) || point_in_triangle(mouse_pos, s_tl, s_br, s_bl) {
+                                        hovered_handle = if comp.active_tool == 3 {
+                                            GizmoHandle::Rotate2D
+                                        } else if comp.active_tool == 5 {
+                                            GizmoHandle::PanBehindAnchor
+                                        } else {
+                                            GizmoHandle::Translate2D
+                                        };
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Mouse Pressed & Interaction Dispatcher
+            if mouse_pressed && in_viewport {
+                if comp.active_tool == 1 || space_down {
+                    // Hand Tool
+                    gizmo_drag = GizmoHandle::HandPan;
+                    gizmo_drag_start_mouse = mouse_pos;
+                } else if comp.active_tool == 2 {
+                    // Zoom Tool
+                    gizmo_drag = GizmoHandle::ZoomPan;
+                    gizmo_drag_start_mouse = mouse_pos;
+                    if alt_down {
+                        if comp.viewport_mode == ViewportMode::CustomView {
+                            comp.custom_orbit_distance = (comp.custom_orbit_distance * 1.25).min(30000.0);
+                        } else if let Some(act) = comp.active_layer_index {
+                            if act < comp.layers.len() && comp.layers[act].source == LayerSource::Camera {
+                                let cur = comp.layers[act].properties.get("zoom").map_or(1500.0, |p| p.get_value_at(comp.current_time));
+                                update_layer_property_val(&mut comp.layers[act], "zoom", (cur / 1.25).max(100.0), comp.current_time);
+                            }
+                        }
+                    } else {
+                        if comp.viewport_mode == ViewportMode::CustomView {
+                            comp.custom_orbit_distance = (comp.custom_orbit_distance * 0.8).max(100.0);
+                        } else if let Some(act) = comp.active_layer_index {
+                            if act < comp.layers.len() && comp.layers[act].source == LayerSource::Camera {
+                                let cur = comp.layers[act].properties.get("zoom").map_or(1500.0, |p| p.get_value_at(comp.current_time));
+                                update_layer_property_val(&mut comp.layers[act], "zoom", (cur * 1.25).min(20000.0), comp.current_time);
+                            }
+                        }
+                    }
+                } else if comp.active_tool == 4 || (alt_down && (comp.viewport_mode != ViewportMode::ActiveCamera || comp.layers.iter().any(|l| l.source == LayerSource::Camera))) {
+                    // Camera Tool
+                    gizmo_drag = if mid_down || shift_down {
+                        GizmoHandle::CameraPan
+                    } else if right_down {
+                        GizmoHandle::CameraDolly
+                    } else {
+                        GizmoHandle::CameraOrbit
+                    };
+                    gizmo_drag_start_mouse = mouse_pos;
+                } else if comp.active_tool == 6 {
+                    // Shape / Rectangle Tool
+                    shape_drag_start = Some(comp_mouse);
+                } else if comp.active_tool == 7 {
+                    // Pen Tool
+                    let mut added = false;
+                    if let Some(act) = comp.active_layer_index {
+                        if act < comp.layers.len() {
+                            let (ax, ay, x, y, _, _, _, _, sx, sy) = layer_transform(&comp, act, comp.current_time);
+                            if let LayerSource::Polygon { points, .. } = &mut comp.layers[act].source {
+                                let local_x = (comp_mouse.x - x + ax) / sx.abs().max(0.01);
+                                let local_y = (comp_mouse.y - y + ay) / sy.abs().max(0.01);
+                                points.push([local_x, local_y]);
+                                added = true;
+                            }
+                        }
+                    }
+                    if !added {
+                        let idx = comp.layers.len();
+                        let mut new_poly = default_layer(
+                            format!("Polygon {}", idx + 1),
+                            LayerSource::Polygon {
+                                points: vec![[-60.0, -50.0], [60.0, -50.0], [0.0, 60.0]],
+                                color: [0.95, 0.45, 0.2, 1.0],
+                            },
+                            idx % AE_LABEL_COLORS.len(),
+                        );
+                        new_poly.properties.get_mut("x").unwrap().base_value = comp_mouse.x;
+                        new_poly.properties.get_mut("y").unwrap().base_value = comp_mouse.y;
+                        comp.layers.push(new_poly);
+                        comp.active_layer_index = Some(idx);
+                    }
+                } else if comp.active_tool == 8 {
+                    // Type Tool
+                    let idx = comp.layers.len();
+                    let mut new_text = default_layer(
+                        format!("Text Layer {}", idx + 1),
+                        LayerSource::Text {
+                            text: "Sample Text".to_string(),
+                            font_size: 48.0,
+                            color: [1.0, 1.0, 1.0, 1.0],
+                        },
+                        idx % AE_LABEL_COLORS.len(),
+                    );
+                    new_text.properties.get_mut("x").unwrap().base_value = comp_mouse.x;
+                    new_text.properties.get_mut("y").unwrap().base_value = comp_mouse.y;
+                    comp.layers.push(new_text);
+                    comp.active_layer_index = Some(idx);
+                    comp.active_tool = 0; // Switch to Selection tool
+                } else {
+                    // Selection Tool (0) / Rotation Tool (3) / Pan Behind Tool (5)
+                    if hovered_handle != GizmoHandle::None {
+                        gizmo_drag = hovered_handle;
+                    } else {
+                        let clicked_layer = hit_test_layers(&comp, &textures, comp_mouse, comp.current_time);
+                        comp.active_layer_index = clicked_layer;
+                        if clicked_layer.is_some() {
+                            gizmo_drag = if comp.active_tool == 3 {
+                                GizmoHandle::Rotate2D
+                            } else if comp.active_tool == 5 {
+                                GizmoHandle::PanBehindAnchor
+                            } else {
+                                GizmoHandle::Translate2D
+                            };
+                        }
+                    }
+
+                    gizmo_drag_start_mouse = mouse_pos;
+                    if let Some(active_idx) = comp.active_layer_index {
+                        if active_idx < comp.layers.len() {
+                            let layer = &comp.layers[active_idx];
+                            let time = comp.current_time;
+                            gizmo_drag_start_x = layer.properties.get("x").map_or(comp_w / 2.0, |p| p.get_value_at(time));
+                            gizmo_drag_start_y = layer.properties.get("y").map_or(comp_h / 2.0, |p| p.get_value_at(time));
+                            gizmo_drag_start_z = layer.properties.get("z").map_or(0.0, |p| p.get_value_at(time));
+                            gizmo_drag_start_ax = layer.properties.get("anchorX").map_or(0.0, |p| p.get_value_at(time));
+                            gizmo_drag_start_ay = layer.properties.get("anchorY").map_or(0.0, |p| p.get_value_at(time));
+                            gizmo_drag_start_sx = layer.properties.get("scaleX").map_or(100.0, |p| p.get_value_at(time));
+                            gizmo_drag_start_sy = layer.properties.get("scaleY").map_or(100.0, |p| p.get_value_at(time));
+                            gizmo_drag_start_rot = layer.properties.get("rotation").map_or(0.0, |p| p.get_value_at(time));
+
+                            gizmo_drag_start_val = match gizmo_drag {
+                                GizmoHandle::TranslateX => gizmo_drag_start_x,
+                                GizmoHandle::TranslateY => gizmo_drag_start_y,
+                                GizmoHandle::TranslateZ => gizmo_drag_start_z,
+                                GizmoHandle::RotateX => layer.properties.get("rotationX").map_or(0.0, |p| p.get_value_at(time)),
+                                GizmoHandle::RotateY => layer.properties.get("rotationY").map_or(0.0, |p| p.get_value_at(time)),
+                                GizmoHandle::RotateZ => gizmo_drag_start_rot,
+                                _ => 0.0,
+                            };
+                        }
+                    }
+                }
+            }
+
+            if (mid_pressed || (right_pressed && alt_down)) && in_viewport {
+                gizmo_drag = if mid_pressed { GizmoHandle::CameraPan } else { GizmoHandle::CameraDolly };
+                gizmo_drag_start_mouse = mouse_pos;
+            }
+
+            // Shape Tool Live Dragging Box & Creation on Release
+            if let Some(start) = shape_drag_start {
+                let p1 = to_screen(start);
+                let p2 = to_screen(comp_mouse);
+                let rx = p1.x.min(p2.x);
+                let ry = p1.y.min(p2.y);
+                let rw = (p1.x - p2.x).abs();
+                let rh = (p1.y - p2.y).abs();
+                draw_rectangle(rx, ry, rw, rh, Color::from_rgba(60, 140, 240, 70));
+                draw_rectangle_lines(rx, ry, rw, rh, 1.5, Color::from_rgba(100, 200, 255, 230));
+
+                let dim_text = format!("{:.0} × {:.0}", (comp_mouse.x - start.x).abs(), (comp_mouse.y - start.y).abs());
+                draw_text(&dim_text, rx + 6.0, ry + rh + 16.0, 12.0, Color::from_rgba(255, 255, 255, 240));
+
+                if mouse_released {
+                    let w = (comp_mouse.x - start.x).abs();
+                    let h = (comp_mouse.y - start.y).abs();
+                    if w > 4.0 && h > 4.0 {
+                        let cx = (start.x + comp_mouse.x) * 0.5;
+                        let cy = (start.y + comp_mouse.y) * 0.5;
+                        let idx = comp.layers.len();
+                        let mut new_shape = default_layer(
+                            format!("Shape Layer {}", idx + 1),
+                            LayerSource::Solid { color: [0.28, 0.58, 0.92, 1.0] },
+                            idx % AE_LABEL_COLORS.len(),
+                        );
+                        new_shape.properties.get_mut("x").unwrap().base_value = cx;
+                        new_shape.properties.get_mut("y").unwrap().base_value = cy;
+                        new_shape.properties.get_mut("anchorX").unwrap().base_value = 100.0;
+                        new_shape.properties.get_mut("anchorY").unwrap().base_value = 100.0;
+                        new_shape.properties.get_mut("scaleX").unwrap().base_value = (w / 200.0) * 100.0;
+                        new_shape.properties.get_mut("scaleY").unwrap().base_value = (h / 200.0) * 100.0;
+                        comp.layers.push(new_shape);
+                        comp.active_layer_index = Some(idx);
+                        comp.active_tool = 0; // Switch to Selection tool
+                    }
+                    shape_drag_start = None;
+                }
+            }
+
+            if mouse_released || (!mouse_down && !mid_down && !right_down) {
+                gizmo_drag = GizmoHandle::None;
+            }
+
+            // Active Dragging Execution
+            if gizmo_drag != GizmoHandle::None {
+                let mouse_delta = mouse_pos - gizmo_drag_start_mouse;
+                let comp_delta = mouse_delta * vec2(comp_w / screen_w, comp_h / screen_h);
+
+                match gizmo_drag {
+                    GizmoHandle::Translate2D => {
+                        if let Some(active_idx) = comp.active_layer_index {
+                            if active_idx < comp.layers.len() {
+                                update_layer_property_val(&mut comp.layers[active_idx], "x", gizmo_drag_start_x + comp_delta.x, comp.current_time);
+                                update_layer_property_val(&mut comp.layers[active_idx], "y", gizmo_drag_start_y + comp_delta.y, comp.current_time);
+                            }
+                        }
+                    }
+                    GizmoHandle::TranslateX => {
+                        if let Some(active_idx) = comp.active_layer_index {
+                            if active_idx < comp.layers.len() {
+                                update_layer_property_val(&mut comp.layers[active_idx], "x", gizmo_drag_start_x + comp_delta.x, comp.current_time);
+                            }
+                        }
+                    }
+                    GizmoHandle::TranslateY => {
+                        if let Some(active_idx) = comp.active_layer_index {
+                            if active_idx < comp.layers.len() {
+                                update_layer_property_val(&mut comp.layers[active_idx], "y", gizmo_drag_start_y + comp_delta.y, comp.current_time);
+                            }
+                        }
+                    }
+                    GizmoHandle::TranslateZ => {
+                        if let Some(active_idx) = comp.active_layer_index {
+                            if active_idx < comp.layers.len() {
+                                update_layer_property_val(&mut comp.layers[active_idx], "z", gizmo_drag_start_z - mouse_delta.y * 2.0, comp.current_time);
+                            }
+                        }
+                    }
+                    GizmoHandle::Rotate2D => {
+                        if let Some(active_idx) = comp.active_layer_index {
+                            if active_idx < comp.layers.len() {
+                                let anchor_s = to_screen(vec2(gizmo_drag_start_x, gizmo_drag_start_y));
+                                let init_ang = (gizmo_drag_start_mouse - anchor_s).y.atan2((gizmo_drag_start_mouse - anchor_s).x).to_degrees();
+                                let cur_ang = (mouse_pos - anchor_s).y.atan2((mouse_pos - anchor_s).x).to_degrees();
+                                let delta_ang = cur_ang - init_ang;
+                                update_layer_property_val(&mut comp.layers[active_idx], "rotation", gizmo_drag_start_rot + delta_ang, comp.current_time);
+                            }
+                        }
+                    }
+                    GizmoHandle::RotateX => {
+                        if let Some(active_idx) = comp.active_layer_index {
+                            if active_idx < comp.layers.len() {
+                                update_layer_property_val(&mut comp.layers[active_idx], "rotationX", gizmo_drag_start_val - mouse_delta.y * 0.7, comp.current_time);
+                            }
+                        }
+                    }
+                    GizmoHandle::RotateY => {
+                        if let Some(active_idx) = comp.active_layer_index {
+                            if active_idx < comp.layers.len() {
+                                update_layer_property_val(&mut comp.layers[active_idx], "rotationY", gizmo_drag_start_val + mouse_delta.x * 0.7, comp.current_time);
+                            }
+                        }
+                    }
+                    GizmoHandle::RotateZ => {
+                        if let Some(active_idx) = comp.active_layer_index {
+                            if active_idx < comp.layers.len() {
+                                update_layer_property_val(&mut comp.layers[active_idx], "rotation", gizmo_drag_start_val + mouse_delta.x * 0.7, comp.current_time);
+                            }
+                        }
+                    }
+                    GizmoHandle::ScaleTL | GizmoHandle::ScaleTR | GizmoHandle::ScaleBL | GizmoHandle::ScaleBR
+                    | GizmoHandle::ScaleT | GizmoHandle::ScaleB | GizmoHandle::ScaleL | GizmoHandle::ScaleR => {
+                        if let Some(active_idx) = comp.active_layer_index {
+                            if active_idx < comp.layers.len() {
+                                let rot_rad = -gizmo_drag_start_rot.to_radians();
+                                let local_dx = comp_delta.x * rot_rad.cos() - comp_delta.y * rot_rad.sin();
+                                let local_dy = comp_delta.x * rot_rad.sin() + comp_delta.y * rot_rad.cos();
+
+                                let (mult_x, mult_y) = match gizmo_drag {
+                                    GizmoHandle::ScaleBR => (1.0, 1.0),
+                                    GizmoHandle::ScaleBL => (-1.0, 1.0),
+                                    GizmoHandle::ScaleTR => (1.0, -1.0),
+                                    GizmoHandle::ScaleTL => (-1.0, -1.0),
+                                    GizmoHandle::ScaleR => (1.0, 0.0),
+                                    GizmoHandle::ScaleL => (-1.0, 0.0),
+                                    GizmoHandle::ScaleB => (0.0, 1.0),
+                                    GizmoHandle::ScaleT => (0.0, -1.0),
+                                    _ => (1.0, 1.0),
+                                };
+
+                                if mult_x != 0.0 {
+                                    let new_sx = (gizmo_drag_start_sx + (local_dx * mult_x / 200.0) * 100.0).max(1.0);
+                                    update_layer_property_val(&mut comp.layers[active_idx], "scaleX", new_sx, comp.current_time);
+                                }
+                                if mult_y != 0.0 {
+                                    let new_sy = (gizmo_drag_start_sy + (local_dy * mult_y / 200.0) * 100.0).max(1.0);
+                                    update_layer_property_val(&mut comp.layers[active_idx], "scaleY", new_sy, comp.current_time);
+                                }
+                            }
+                        }
+                    }
+                    GizmoHandle::PanBehindAnchor => {
+                        if let Some(active_idx) = comp.active_layer_index {
+                            if active_idx < comp.layers.len() {
+                                let rot_rad = -gizmo_drag_start_rot.to_radians();
+                                let scale_x_factor = (gizmo_drag_start_sx / 100.0).abs().max(0.01);
+                                let scale_y_factor = (gizmo_drag_start_sy / 100.0).abs().max(0.01);
+                                let local_dx = (comp_delta.x * rot_rad.cos() - comp_delta.y * rot_rad.sin()) / scale_x_factor;
+                                let local_dy = (comp_delta.x * rot_rad.sin() + comp_delta.y * rot_rad.cos()) / scale_y_factor;
+
+                                update_layer_property_val(&mut comp.layers[active_idx], "anchorX", gizmo_drag_start_ax + local_dx, comp.current_time);
+                                update_layer_property_val(&mut comp.layers[active_idx], "anchorY", gizmo_drag_start_ay + local_dy, comp.current_time);
+                                update_layer_property_val(&mut comp.layers[active_idx], "x", gizmo_drag_start_x + comp_delta.x, comp.current_time);
+                                update_layer_property_val(&mut comp.layers[active_idx], "y", gizmo_drag_start_y + comp_delta.y, comp.current_time);
+                            }
+                        }
+                    }
+                    GizmoHandle::HandPan => {
+                        if comp.viewport_mode == ViewportMode::CustomView {
+                            comp.custom_orbit_target[0] -= comp_delta.x;
+                            comp.custom_orbit_target[1] -= comp_delta.y;
+                            gizmo_drag_start_mouse = mouse_pos;
+                        } else if let Some(c_idx) = comp.layers.iter().position(|l| l.source == LayerSource::Camera) {
+                            let cur_x = comp.layers[c_idx].properties.get("x").map_or(comp_w / 2.0, |p| p.get_value_at(comp.current_time));
+                            let cur_y = comp.layers[c_idx].properties.get("y").map_or(comp_h / 2.0, |p| p.get_value_at(comp.current_time));
+                            let cur_px = comp.layers[c_idx].properties.get("poiX").map_or(comp_w / 2.0, |p| p.get_value_at(comp.current_time));
+                            let cur_py = comp.layers[c_idx].properties.get("poiY").map_or(comp_h / 2.0, |p| p.get_value_at(comp.current_time));
+                            update_layer_property_val(&mut comp.layers[c_idx], "x", cur_x - comp_delta.x, comp.current_time);
+                            update_layer_property_val(&mut comp.layers[c_idx], "y", cur_y - comp_delta.y, comp.current_time);
+                            update_layer_property_val(&mut comp.layers[c_idx], "poiX", cur_px - comp_delta.x, comp.current_time);
+                            update_layer_property_val(&mut comp.layers[c_idx], "poiY", cur_py - comp_delta.y, comp.current_time);
+                            gizmo_drag_start_mouse = mouse_pos;
+                        }
+                    }
+                    GizmoHandle::ZoomPan => {
+                        if comp.viewport_mode == ViewportMode::CustomView {
+                            comp.custom_orbit_distance = (comp.custom_orbit_distance - mouse_delta.y * 8.0).clamp(100.0, 30000.0);
+                            gizmo_drag_start_mouse = mouse_pos;
+                        } else if let Some(c_idx) = comp.layers.iter().position(|l| l.source == LayerSource::Camera) {
+                            let cur_z = comp.layers[c_idx].properties.get("z").map_or(-1500.0, |p| p.get_value_at(comp.current_time));
+                            update_layer_property_val(&mut comp.layers[c_idx], "z", cur_z + mouse_delta.y * 6.0, comp.current_time);
+                            gizmo_drag_start_mouse = mouse_pos;
+                        }
+                    }
+                    GizmoHandle::CameraOrbit => {
+                        let is_ctrl = is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl);
+                        let is_shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
+                        if comp.viewport_mode == ViewportMode::CustomView {
+                            if is_ctrl || (is_shift && right_down) {
+                                comp.custom_orbit_roll += mouse_delta.x * 0.4;
+                            } else {
+                                comp.custom_orbit_yaw += mouse_delta.x * 0.4;
+                                comp.custom_orbit_pitch = (comp.custom_orbit_pitch + mouse_delta.y * 0.4).clamp(-89.0, 89.0);
+                            }
+                            gizmo_drag_start_mouse = mouse_pos;
+                        } else if comp.viewport_mode == ViewportMode::ActiveCamera {
+                            let mut cam_idx = comp.active_layer_index.filter(|&act| act < comp.layers.len() && comp.layers[act].source == LayerSource::Camera);
+                            if cam_idx.is_none() {
+                                cam_idx = comp.layers.iter().position(|l| l.source == LayerSource::Camera);
+                            }
+                            if let Some(c_idx) = cam_idx {
+                                if is_ctrl || is_shift {
+                                    let cur_rz = comp.layers[c_idx].properties.get("rotation").map_or(0.0, |p| p.get_value_at(comp.current_time));
+                                    update_layer_property_val(&mut comp.layers[c_idx], "rotation", cur_rz + mouse_delta.x * 0.4, comp.current_time);
+                                } else {
+                                    let cur_ry = comp.layers[c_idx].properties.get("rotationY").map_or(0.0, |p| p.get_value_at(comp.current_time));
+                                    let cur_rx = comp.layers[c_idx].properties.get("rotationX").map_or(0.0, |p| p.get_value_at(comp.current_time));
+                                    update_layer_property_val(&mut comp.layers[c_idx], "rotationY", cur_ry + mouse_delta.x * 0.4, comp.current_time);
+                                    update_layer_property_val(&mut comp.layers[c_idx], "rotationX", (cur_rx + mouse_delta.y * 0.4).clamp(-89.0, 89.0), comp.current_time);
+                                }
+                                gizmo_drag_start_mouse = mouse_pos;
+                            }
+                        }
+                    }
+                    GizmoHandle::CameraPan => {
+                        if comp.viewport_mode == ViewportMode::CustomView {
+                            comp.custom_orbit_target[0] -= comp_delta.x;
+                            comp.custom_orbit_target[1] -= comp_delta.y;
+                            gizmo_drag_start_mouse = mouse_pos;
+                        } else if comp.viewport_mode == ViewportMode::ActiveCamera {
+                            let mut cam_idx = comp.active_layer_index.filter(|&act| act < comp.layers.len() && comp.layers[act].source == LayerSource::Camera);
+                            if cam_idx.is_none() {
+                                cam_idx = comp.layers.iter().position(|l| l.source == LayerSource::Camera);
+                            }
+                            if let Some(c_idx) = cam_idx {
+                                let dx = -comp_delta.x;
+                                let dy = -comp_delta.y;
+                                let cur_x = comp.layers[c_idx].properties.get("x").map_or(comp_w / 2.0, |p| p.get_value_at(comp.current_time));
+                                let cur_y = comp.layers[c_idx].properties.get("y").map_or(comp_h / 2.0, |p| p.get_value_at(comp.current_time));
+                                let cur_px = comp.layers[c_idx].properties.get("poiX").map_or(comp_w / 2.0, |p| p.get_value_at(comp.current_time));
+                                let cur_py = comp.layers[c_idx].properties.get("poiY").map_or(comp_h / 2.0, |p| p.get_value_at(comp.current_time));
+                                update_layer_property_val(&mut comp.layers[c_idx], "x", cur_x + dx, comp.current_time);
+                                update_layer_property_val(&mut comp.layers[c_idx], "y", cur_y + dy, comp.current_time);
+                                update_layer_property_val(&mut comp.layers[c_idx], "poiX", cur_px + dx, comp.current_time);
+                                update_layer_property_val(&mut comp.layers[c_idx], "poiY", cur_py + dy, comp.current_time);
+                                gizmo_drag_start_mouse = mouse_pos;
+                            }
+                        }
+                    }
+                    GizmoHandle::CameraDolly => {
+                        if comp.viewport_mode == ViewportMode::CustomView {
+                            comp.custom_orbit_distance = (comp.custom_orbit_distance - mouse_delta.y * 5.0).clamp(100.0, 30000.0);
+                            gizmo_drag_start_mouse = mouse_pos;
+                        } else if comp.viewport_mode == ViewportMode::ActiveCamera {
+                            let mut cam_idx = comp.active_layer_index.filter(|&act| act < comp.layers.len() && comp.layers[act].source == LayerSource::Camera);
+                            if cam_idx.is_none() {
+                                cam_idx = comp.layers.iter().position(|l| l.source == LayerSource::Camera);
+                            }
+                            if let Some(c_idx) = cam_idx {
+                                let cur_z = comp.layers[c_idx].properties.get("z").map_or(-1500.0, |p| p.get_value_at(comp.current_time));
+                                update_layer_property_val(&mut comp.layers[c_idx], "z", cur_z + mouse_delta.y * 4.0, comp.current_time);
+                                gizmo_drag_start_mouse = mouse_pos;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Viewport Badges: Mode & Active Tool
+            let mode_title = match comp.viewport_mode {
+                ViewportMode::ActiveCamera => "Active Camera",
+                ViewportMode::CustomView => "Custom View 1",
+                ViewportMode::Top => "Top (XZ)",
+                ViewportMode::Front => "Front (XY)",
+                ViewportMode::Right => "Right (YZ)",
+                ViewportMode::Left => "Left (-YZ)",
+                ViewportMode::Bottom => "Bottom (-XZ)",
+                ViewportMode::Back => "Back (-XY)",
+            };
+            draw_rectangle(screen_x + 12.0, screen_y + 12.0, 115.0, 22.0, Color::from_rgba(20, 20, 26, 190));
+            draw_rectangle_lines(screen_x + 12.0, screen_y + 12.0, 115.0, 22.0, 1.0, Color::from_rgba(70, 70, 85, 160));
+            draw_text(mode_title, screen_x + 18.0, screen_y + 27.0, 12.0, Color::from_rgba(200, 210, 230, 240));
+
+            let tool_badge = match comp.active_tool {
+                0 => "↖ Selection (V)",
+                1 => "✋ Hand (H)",
+                2 => "🔍 Zoom (Z)",
+                3 => "🔄 Rotation (W)",
+                4 => "🎥 Camera (C)",
+                5 => "⚓ Pan Behind (Y)",
+                6 => "▭ Shape (Q)",
+                7 => "✒ Pen (G)",
+                8 => "T Type (T)",
+                _ => "↖ Tool",
+            };
+            draw_rectangle(screen_x + 132.0, screen_y + 12.0, 115.0, 22.0, Color::from_rgba(24, 24, 32, 190));
+            draw_rectangle_lines(screen_x + 132.0, screen_y + 12.0, 115.0, 22.0, 1.0, Color::from_rgba(60, 140, 220, 180));
+            draw_text(tool_badge, screen_x + 138.0, screen_y + 27.0, 12.0, Color::from_rgba(140, 205, 255, 240));
+
+            // 3D Viewport Orientation Tripod Widget (Top-Right)
+            let tripod_origin = vec2(screen_x + screen_w - 36.0, screen_y + 36.0);
+            draw_circle(tripod_origin.x, tripod_origin.y, 20.0, Color::from_rgba(25, 25, 30, 190));
+            draw_circle_lines(tripod_origin.x, tripod_origin.y, 20.0, 1.0, Color::from_rgba(70, 70, 85, 160));
+
+            let t_forward = if (viewport_cam.target - viewport_cam.position).length() > 0.0001 {
+                (viewport_cam.target - viewport_cam.position).normalize()
+            } else {
+                vec3(0.0, 0.0, 1.0)
+            };
+            let up_hint = if t_forward.y.abs() > 0.999 { vec3(0.0, 0.0, 1.0) } else { vec3(0.0, 1.0, 0.0) };
+            let t_right = t_forward.cross(up_hint).normalize();
+            let t_up = t_right.cross(t_forward).normalize();
+
+            let tx = vec2(vec3(1.0, 0.0, 0.0).dot(t_right), vec3(1.0, 0.0, 0.0).dot(t_up)) * 14.0;
+            let ty = vec2(vec3(0.0, 1.0, 0.0).dot(t_right), vec3(0.0, 1.0, 0.0).dot(t_up)) * 14.0;
+            let tz = vec2(vec3(0.0, 0.0, 1.0).dot(t_right), vec3(0.0, 0.0, 1.0).dot(t_up)) * 14.0;
+
+            draw_line(tripod_origin.x, tripod_origin.y, tripod_origin.x + tx.x, tripod_origin.y + tx.y, 2.0, Color::from_rgba(240, 60, 60, 255));
+            draw_text("X", tripod_origin.x + tx.x + 3.0, tripod_origin.y + tx.y + 3.0, 10.0, Color::from_rgba(240, 60, 60, 255));
+
+            draw_line(tripod_origin.x, tripod_origin.y, tripod_origin.x + ty.x, tripod_origin.y + ty.y, 2.0, Color::from_rgba(60, 220, 80, 255));
+            draw_text("Y", tripod_origin.x + ty.x + 3.0, tripod_origin.y + ty.y + 3.0, 10.0, Color::from_rgba(60, 220, 80, 255));
+
+            draw_line(tripod_origin.x, tripod_origin.y, tripod_origin.x + tz.x, tripod_origin.y + tz.y, 2.0, Color::from_rgba(60, 140, 255, 255));
+            draw_text("Z", tripod_origin.x + tz.x + 3.0, tripod_origin.y + tz.y + 3.0, 10.0, Color::from_rgba(60, 140, 255, 255));
+        }
+        */
 
         // --- 2. AFTER EFFECTS UI INTERFACE ---
         egui_macroquad::ui(|ctx| {
@@ -5660,6 +6631,37 @@ async fn main() {
 
                     ui.separator();
                     viewport_rect = ui.available_rect_before_wrap();
+
+                    // // 1. Get the opaque miniquad tracker index
+                    // let mq_texture_id: miniquad::TextureId = render_target.texture.raw_miniquad_id();
+                    //
+                    // // 2. Safely obtain the macroquad internal GL wrapper
+                    // let gl_ctx = unsafe { macroquad::window::get_internal_gl() };
+                    //
+                    // // 3. Query the driver identifier via the exposed quad_context field
+                    // let raw_id: miniquad::RawId = unsafe {
+                    //     gl_ctx.quad_context.texture_raw_id(mq_texture_id)
+                    // };
+                    //
+                    // // 4. Extract your driver integer handle for egui
+                    // if let miniquad::RawId::OpenGl(gl_id) = raw_id {
+                    //     let tex_id = egui::TextureId::User(gl_id as u64);
+                    //
+                    //     ui.painter().image(
+                    //         tex_id,
+                    //         viewport_rect,
+                    //         // UV coordinates flipped for OpenGL target buffers
+                    //         egui::Rect::from_min_max(egui::pos2(0.0, 1.0), egui::pos2(1.0, 0.0)),
+                    //         egui::Color32::WHITE,
+                    //     );
+                    // }
+
+
+
+                    // Paint the off-screen viewport texture onto the UI panel
+
+
+
                 });
 
             // Shortcuts dialog
@@ -6046,6 +7048,8 @@ async fn main() {
         }
 
         // --- 3. FINAL COMPOSITE VIEWPORT RENDERING ---
+
+
         egui_macroquad::draw();
 
         set_default_camera();
